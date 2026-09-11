@@ -8,6 +8,12 @@ and version numbers follow [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Public Gitleaks workflow now actually loads `gitleaks.toml` (the action only
+  auto-discovers the dotted filename, so the custom personal-info rules were
+  silently unused) and supports manual full-history runs via `workflow_dispatch`.
+
 ## [1.0.3] - 2026-09-11
 
 ### Fixed

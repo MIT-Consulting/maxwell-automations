@@ -3,6 +3,8 @@ name: Gitleaks
 on:
   push:
     branches: ["**"]
+  # Manual runs scan the full history (push events only scan the pushed range).
+  workflow_dispatch:
 
 jobs:
   gitleaks:
@@ -18,3 +20,5 @@ jobs:
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The action only auto-discovers `.gitleaks.toml`; ours is un-dotted.
+          GITLEAKS_CONFIG: gitleaks.toml
