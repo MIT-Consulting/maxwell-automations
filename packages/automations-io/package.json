@@ -1,0 +1,19 @@
+{
+  "name": "@lca/automations-io",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "automations-io": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@lca/shared": "*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "undici": "^8.3.0",
+    "zod": "^3.25.76"
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "name": "@lca/daemon",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "lca-daemon": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/index.js",
+    "dev": "node --watch dist/index.js"
+  },
+  "dependencies": {
+    "@cursor/sdk": "^1.0.15",
+    "@lca/automations-io": "*",
+    "@lca/shared": "*",
+    "better-sqlite3": "^11.9.1",
+    "chokidar": "^4.0.3",
+    "dotenv": "^17.4.2",
+    "node-cron": "^4.2.1",
+    "node-notifier": "^10.0.1",
+    "picomatch": "^4.0.4",
+    "ws": "^8.21.0",
+    "yaml": "^2.8.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node-cron": "^3.0.11",
+    "@types/node-notifier": "^8.0.5",
+    "@types/picomatch": "^4.0.3",
+    "@types/ws": "^8.18.1"
+  }
+}

@@ -1,0 +1,23 @@
+title = "maxwell-automations leak rules"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "windows-user-path"
+description = "Windows user profile path"
+regex = '''(?i)C:[/\\]Users[/\\][^\s"'`]+'''
+[[rules.allowlists]]
+regexes = ['''C:[/\\]Users[/\\]dev[/\\]''']
+
+[[rules]]
+id = "unix-user-path"
+description = "Unix home path with a real username"
+regex = '''(?i)/Users/[A-Za-z0-9._-]+/'''
+[[rules.allowlists]]
+regexes = ['''/Users/dev/''']
+
+[[rules]]
+id = "transcript-uuid-link"
+description = "Markdown link to a Cursor transcript UUID"
+regex = '''\[[^\]]+\]\([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\)'''

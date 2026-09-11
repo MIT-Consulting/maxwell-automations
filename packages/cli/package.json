@@ -1,0 +1,23 @@
+{
+  "name": "@lca/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "bin": {
+    "max": "./dist/index.js",
+    "lca": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@lca/shared": "*",
+    "ws": "^8.21.0",
+    "yaml": "^2.8.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1"
+  }
+}

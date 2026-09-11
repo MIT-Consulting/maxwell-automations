@@ -1,0 +1,179 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* Dark-only product: the palette is defined under both :root and .dark, and
+   <html class="dark"> is set. The custom variant lets shadcn `dark:` utilities
+   resolve against the .dark class. */
+@custom-variant dark (&:is(.dark *));
+
+/* Canonical "Local Automations Dark" palette (exact hex from the b8 design
+   system). These are the source of truth — do not swap for Stitch namedColors. */
+:root {
+  --background: #0e1116;
+  --foreground: #e6edf3;
+  --card: #161b22;
+  --card-foreground: #e6edf3;
+  --popover: #161b22;
+  --popover-foreground: #e6edf3;
+  --primary: #3b82f6;
+  --primary-foreground: #ffffff;
+  --primary-hover: #2f6fe0;
+  --secondary: #161b22;
+  --secondary-foreground: #e6edf3;
+  --muted: #1c2230;
+  --muted-foreground: #8b949e;
+  --accent: #1c2230;
+  --accent-foreground: #e6edf3;
+  --destructive: #f85149;
+  --destructive-foreground: #ffffff;
+  --border: #2a313c;
+  --input: #2a313c;
+  --ring: #3b82f6;
+
+  --radius: 0.5rem;
+
+  /* Run / automation status colors. */
+  --status-live: #3fb950;
+  --status-offline: #8b949e;
+  --status-running: #3b82f6;
+  --status-needs-input: #d29922;
+  --status-paused: #a371f7;
+  --status-completed: #3fb950;
+  --status-failed: #f85149;
+}
+
+.dark {
+  --background: #0e1116;
+  --foreground: #e6edf3;
+  --card: #161b22;
+  --card-foreground: #e6edf3;
+  --popover: #161b22;
+  --popover-foreground: #e6edf3;
+  --primary: #3b82f6;
+  --primary-foreground: #ffffff;
+  --primary-hover: #2f6fe0;
+  --secondary: #161b22;
+  --secondary-foreground: #e6edf3;
+  --muted: #1c2230;
+  --muted-foreground: #8b949e;
+  --accent: #1c2230;
+  --accent-foreground: #e6edf3;
+  --destructive: #f85149;
+  --destructive-foreground: #ffffff;
+  --border: #2a313c;
+  --input: #2a313c;
+  --ring: #3b82f6;
+
+  --status-live: #3fb950;
+  --status-offline: #8b949e;
+  --status-running: #3b82f6;
+  --status-needs-input: #d29922;
+  --status-paused: #a371f7;
+  --status-completed: #3fb950;
+  --status-failed: #f85149;
+}
+
+@theme inline {
+  /* Match Cursor / VS Code: the workbench UI uses the platform system font and
+     the editor uses a platform monospace. */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI",
+    system-ui, "Ubuntu", "Droid Sans", sans-serif;
+  --font-mono: "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-hover: var(--primary-hover);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* Status colors exposed as Tailwind utilities (bg-status-live, text-status-failed, …). */
+  --color-status-live: var(--status-live);
+  --color-status-offline: var(--status-offline);
+  --color-status-running: var(--status-running);
+  --color-status-needs-input: var(--status-needs-input);
+  --color-status-paused: var(--status-paused);
+  --color-status-completed: var(--status-completed);
+  --color-status-failed: var(--status-failed);
+
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --radius-xl: calc(var(--radius) + 6px);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--font-sans);
+  }
+}
+
+/* Hide the scrollbar while keeping the element scrollable (used by the mobile
+   column tab strip). */
+@utility no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* Classic hover scrollbar for non-board surfaces. Board columns use
+   OverlayScrollArea instead so the thumb overlays without reserving gutter. */
+@utility column-scrollbar {
+  scrollbar-gutter: auto;
+  scrollbar-width: none;
+
+  &:hover {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+
+  &::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    background: transparent;
+  }
+
+  &:hover::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: transparent;
+    border-radius: 9999px;
+    transition: background 150ms ease;
+  }
+
+  &:hover::-webkit-scrollbar-thumb {
+    background: var(--border);
+  }
+
+  &:hover::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in srgb, var(--border) 70%, var(--foreground));
+  }
+}

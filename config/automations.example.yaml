@@ -1,0 +1,78 @@
+# Copy to ~/.cursor-local-automations/automations.yaml
+workspaces:
+  - /path/to/your/workspace
+
+# Daemon-wide runtime knobs (all optional; shown with their defaults).
+# Changing these requires a daemon restart. Env vars override these values:
+#   LCA_MAX_CONCURRENT, LCA_EVENT_RETENTION, LCA_MAX_EVENT_BYTES,
+#   LCA_MAX_ATTACHMENT_BYTES, LCA_MAX_ATTACHMENTS_PER_MESSAGE,
+#   LCA_ALLOWED_ATTACHMENT_MIME_TYPES
+settings:
+  maxConcurrentRuns: 3 # runs executing at once; excess runs queue
+  eventRetentionPerRun: 2000 # events kept per run after it ends (min 50)
+  maxEventPayloadBytes: 65536 # per-event payload cap; larger payloads truncate (min 1024)
+  # maxAttachmentBytes: 15728640 # 15 MiB per upload
+  # maxAttachmentsPerMessage: 5
+  # allowedAttachmentMimeTypes: [image/png, image/jpeg, image/gif, image/webp, text/plain, text/markdown]
+  # Default model recipe for pipeline kickoff. Unlisted required roles must be
+  # supplied at kickoff. Optional researcher / gatekeeper stay commented so
+  # copying this file does not silently arm an expensive prelude or exit model.
+  # Named profiles: see docs/configuration.md (pipelineRoleModelProfiles).
+  # pipelineRoleModels:
+  #   planner: grok-4.5
+  #   implementer: composer-2.5
+  #   reviewer:
+  #     id: claude-4.6-sonnet-medium-thinking
+  #     params:
+  #       - id: reasoning
+  #         value: high
+  #   docs: composer-2.5
+  #   # researcher: grok-4.5   # omit = no research prelude
+  #   # gatekeeper: grok-4.5  # omit = final-gate falls back to reviewer
+
+automations:
+  # Linear chain example: plan → implement → review.
+  # Only the first step needs a real trigger; later steps stay disabled and
+  # fire automatically when the prior step completes (chain bypasses enabled-gate).
+  # For the maintained, provisioned version of this pattern see the implement-fully
+  # pipeline (POST /api/pipelines/implement-fully/workers) — docs/configuration.md.
+  - id: chain-plan
+    name: Chain — Plan phase
+    enabled: true
+    trigger:
+      type: manual
+    # Structured selection (id + params). Scalar `model: grok-4.5` still works.
+    model:
+      id: grok-4.5
+      params:
+        - id: reasoning
+          value: high
+    prompt: |
+      Use /plan-for-speed-model-fully to plan the next feature phase.
+      Output a speed-model-ready phase doc under docs/roadmap/.
+    chain:
+      next: chain-implement
+      when: completed
+
+  - id: chain-implement
+    name: Chain — Implement phase
+    enabled: false
+    trigger:
+      type: manual
+    model: composer-2.5-fast
+    prompt: |
+      Use /implement-phase to implement the latest pending phase doc.
+    chain:
+      next: chain-review
+      when: completed
+      # passResult: true appends the prior step's agent output to this prompt.
+      passResult: true
+
+  - id: chain-review
+    name: Chain — Review phase
+    enabled: false
+    trigger:
+      type: manual
+    model: claude-4.6-sonnet-medium-thinking
+    prompt: |
+      Use /review-speed-implementation to audit the implementation against the plan.

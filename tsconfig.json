@@ -1,0 +1,9 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/shared" },
+    { "path": "packages/daemon" },
+    { "path": "packages/cli" },
+    { "path": "packages/automations-io" }
+  ]
+}
