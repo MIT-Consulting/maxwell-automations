@@ -54,6 +54,7 @@ export const INCLUDE_PREFIXES = [
   "scripts/",
   "skills/",
   ".cursor/skills/lca-dev/",
+  ".cursor/rules/",
   "docs/brand.md",
   "docs/configuration.md",
   "docs/implement-fully-protocol.md",
@@ -203,6 +204,18 @@ function isProbablyText(rel) {
   ) || /^(LICENSE|NOTICE|README)$/i.test(rel.split("/").pop() ?? "");
 }
 
+/** Wipe a dest tree but keep an existing `.git` so re-exports can push. */
+function emptyDirKeepGit(dir) {
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+    return;
+  }
+  for (const name of readdirSync(dir)) {
+    if (name === ".git") continue;
+    rmSync(join(dir, name), { recursive: true, force: true });
+  }
+}
+
 /**
  * @param {{ outDir: string, dryRun: boolean }} opts
  */
@@ -218,10 +231,8 @@ export function exportPublic(opts) {
 
   if (!opts.dryRun) {
     mkdirSync(outDir, { recursive: true });
-    rmSync(codeDest, { recursive: true, force: true });
-    rmSync(skillsDest, { recursive: true, force: true });
-    mkdirSync(codeDest, { recursive: true });
-    mkdirSync(skillsDest, { recursive: true });
+    emptyDirKeepGit(codeDest);
+    emptyDirKeepGit(skillsDest);
   }
 
   for (const rel of files) {

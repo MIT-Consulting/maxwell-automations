@@ -1,0 +1,103 @@
+---
+description: Tech stack and conventions for cursor-local-automations
+alwaysApply: true
+---
+
+# Tech Stack
+
+A fully local clone of Cursor's cloud "Automations" feature. Triggers, agent runs,
+and visibility stay on the developer's machine. The product is branded **Max**
+(user-facing); `lca`, `@lca/*`, `LCA_*`, and `~/.cursor-local-automations/` are
+stable implementation-facing names for the same product.
+
+## Runtime & Language
+- **Node 20+ / TypeScript** across all packages (monorepo: daemon, dashboard, CLI, shared types).
+- **Agent execution:** `@cursor/sdk` in local mode (`run.stream()`, `Agent.create()`,
+  `agent.send()`, `Agent.resume()`). `cursor-agent --headless` is a fallback behind an
+  interface, not the primary path.
+- Spawned agents load all settings: `settingSources: ["all"]` (intentional — do not revert to `[]`).
+
+## Data & Persistence
+- **SQLite** via `better-sqlite3` (synchronous): `workspaces`, `automations`, `runs`,
+  `run_events`, `input_requests`.
+- **Config:** YAML, watched. Per-workspace `.cursor/automations/*.yaml` + global
+  `~/.cursor-local-automations/automations.yaml`. The watcher reconciles
+  automations/workspaces and hot-reloads `settings.notify`; other daemon
+  `settings:` (incl. `host`/`allowedIps` and role profiles) load once at startup
+  and need a daemon restart.
+- **Logs/state:** all under `~/.cursor-local-automations/` — `dev.log` (run flow),
+  `daemon.err.log` (unhandled rejections, incl. auth/session errors), `state.sqlite`
+  (UTC timestamps). Operator docs: `docs/troubleshooting.md`.
+- **Runtime orientation (agents):** do **not** probe `state.sqlite`, invent SQL, or
+  grep transcripts to find “the latest X” / what’s running / a halt. Prefer owned
+  CLI first: bare `lca doctor` (Pipelines + Recent failures with short ids) →
+  `lca doctor <id>`; `lca status`; `lca list`; `/lca-dev runs`. Hand-written SQLite
+  only when those cannot answer. Details in the `lca-dev` skill.
+
+## Triggers
+- `node-cron` (schedules), git hooks (post-commit/push/merge → localhost POST),
+  `chokidar` (file-watch), command (non-zero exit fires), manual.
+
+## Dashboard & Frontend
+- **Vite + React**, local web. Kanban board, WebSocket for live events, HTTP REST for commands.
+
+## CLI
+- `lca` verbs: `up`/`down` (daemon lifecycle), `list`, `enable`/`disable`, `run`,
+  `logs`, `doctor`, `answer <runId>`, `pause`/`resume <runId>`, `export`, `remote` (host/allowlist for remote access,
+  e.g. phone over Tailscale), `queue` (serial implement-fully batch: `add`/`list`/`rm`/`clear`;
+  concurrency is b49).
+  Thin REST/WS client over the daemon — every verb except `up`/`help`/`remote` needs the
+  daemon running (`remote` edits the global YAML directly and restarts the daemon only if
+  it's live).
+- `lca` is a workspace bin (not on PATH). `npm link -w @lca/cli` gives a global `lca`;
+  otherwise `npx lca`. Rebuild after source edits: `npm run build -w @lca/cli` (no watch).
+- **Daemon restart after code changes:** use **`lca restart`** (one atomic down+up that
+  relaunches detached). **Never** run `lca down` from an automation agent or to
+  "restart" — it stops the daemon and the run dies before `lca up` can run, leaving
+  remote access down. `lca down` is operator teardown only (`/lca-dev down`, end of
+  session). Pick up daemon/dashboard fixes: `npm run build -w @lca/daemon` (and
+  dashboard if needed), then `lca restart`.
+- **Never shut down the live daemon from an agent** via `lca down`,
+  `POST /api/shutdown`, or verify helpers like `scripts/stop-lca-daemons.mjs`
+  (same footgun — Max/remote stays down). Isolated UI verifies must use a temp
+  `LCA_HOME` and their own port; do not preflight-kill `:3747`. Shared-DB verify
+  scripts refuse to stop a remote/active daemon unless
+  `LCA_FORCE_STOP_DAEMONS=1` (operator-only override).
+
+## Notifications
+- **Sinks:** dashboard (always on) + OS toast + optional ntfy phone push.
+- **Prefs / connection:** global `settings.notify` YAML or dashboard **Settings → Alerts**;
+  notify settings hot-reload without a daemon restart. Catalog/defaults/YAML:
+  `docs/configuration.md` § Phone notify. Diagnostics: `docs/troubleshooting.md`.
+- `NotifierOptions.eventPrefs` is required for every `Notifier` construction.
+- `LCA_NO_TOAST=1` / `LCA_NO_NTFY=1` remain process-level hard mutes.
+
+## Agent Doc Router
+- **Feature status / recent shipped work:** `docs/roadmap/00-index.md` is canonical;
+  do not infer status from README blurbs or an unarchived feature folder.
+- **Role-model recipes / `--role-profile`:** `docs/configuration.md`
+  (`pipelineRoleModels`, `pipelineRoleModelProfiles`). Planning `--profile` is a
+  different setting. Confirm the resolved recipe with an implement-fully dry run.
+  Operator calibration (which model for which seat, attended vs unattended):
+  `docs/operating-model.md` § Model routing. Backlog hierarchy / TicketDriver
+  posture (shallow on purpose; external boards later): same doc § Backlog hierarchy.
+- **Alerts / toast / ntfy:** `docs/configuration.md` § Phone notify; live surface is
+  dashboard **Settings → Alerts**.
+- **Runtime failures / halts / waves:** use the `lca-dev` skill and `lca doctor`
+  before `docs/troubleshooting.md`.
+- **Implement-fully loop / tracker ownership / final gate:** `docs/implement-fully-protocol.md`.
+
+## Conventions
+- Daemon is the single source of truth and lifecycle owner.
+- Read the `/sdk` skill before writing SDK code — the surface evolves.
+- Git hooks stay dumb (just POST); match logic lives in the daemon. Append to existing hooks, never clobber.
+- Auth via `CURSOR_API_KEY` (likely in gitignored `~/.cursor-local-automations/.env`).
+- HTTP/WS bind to `127.0.0.1` by default; loopback is always allowlisted and
+  token-exempt. For remote access (e.g. phone over Tailscale) use
+  `lca remote on <ip>`, which **multi-binds** loopback + the configured host
+  (not `0.0.0.0`) so the CLI, git-hook triggers, and the MCP `ask_user` bridge
+  keep hitting `127.0.0.1`. When remote is on, a **control token**
+  (`settings.controlToken` / `X-LCA-Control-Token`, `?token=` for `/ws`) gates
+  every non-loopback request; an origin/CSRF guard protects loopback. `0.0.0.0`
+  is an explicit `--insecure-any` escape hatch only. Details in
+  `docs/configuration.md`.

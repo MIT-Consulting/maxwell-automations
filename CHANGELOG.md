@@ -8,6 +8,13 @@ and version numbers follow [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-09-10
+
+### Fixed
+
+- Public CI: Node 22 (undici 8 on Node 20 crashed three test suites), stale
+  model-label and Files-nav seam tests, export of `.cursor/rules/`.
+
 ## [1.0.0] - 2026-09-10
 
 First public snapshot of Max (Maxwell) as a local agent factory.

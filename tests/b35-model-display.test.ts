@@ -131,7 +131,7 @@ describe("modelChipShortLabel", () => {
       params: [{ id: "a", value: "b" }],
     };
     expect(modelChipShortLabel(selection, catalog)).toBe("custom-x");
-    expect(modelChipLabel(selection, catalog)).toBe("custom-x (a=b)");
+    expect(modelChipLabel(selection, catalog)).toBe("custom-x b");
     expect(modelChipLabel(selection, [])).toBe("custom-x (a=b)");
   });
 

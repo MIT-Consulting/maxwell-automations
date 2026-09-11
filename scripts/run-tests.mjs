@@ -90,7 +90,11 @@ export function buildVitestInvocations(cliArgs = [], opts = {}) {
   const vitestEntry = resolveVitestEntry(opts.vitestEntry);
 
   if (cliArgs.length === 0) {
-    const excludeArgs = REAL_GIT_LANE_FILES.flatMap((file) => ["--exclude", file]);
+    const excludeArgs = [
+      "--exclude",
+      ".export-public/**",
+      ...REAL_GIT_LANE_FILES.flatMap((file) => ["--exclude", file]),
+    ];
     return [
       {
         label: "normal",

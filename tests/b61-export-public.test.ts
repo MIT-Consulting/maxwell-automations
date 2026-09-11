@@ -16,6 +16,7 @@ describe("export allowlist", () => {
     expect(isIncluded("docs/roadmap-format.md")).toBe(true);
     expect(isIncluded("docs/forking.md")).toBe(true);
     expect(isIncluded("packages/cli/src/index.ts")).toBe(true);
+    expect(isIncluded(".cursor/rules/tech-stack.mdc")).toBe(true);
     expect(isIncluded("docs/roadmap/00-index.md")).toBe(false);
     expect(isIncluded("docs/operating-model.md")).toBe(false);
     expect(isIncluded("docs/cursor_open_source_readiness_analysis.md")).toBe(

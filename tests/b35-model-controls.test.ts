@@ -320,7 +320,7 @@ describe("selectionLabel", () => {
         },
         [model]
       )
-    ).toBe("Grok 4.5 (reasoning=High, web=true)");
+    ).toBe("Grok 4.5 High web");
   });
 
   it("falls back to the raw id when the model is unknown", () => {

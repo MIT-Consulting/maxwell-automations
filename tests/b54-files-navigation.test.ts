@@ -137,13 +137,16 @@ describe("files navigation integration seams", () => {
     expect(app).toMatch(/canGoForward=\{canGoForward\(filesNav\)\}/);
     expect(app).toMatch(/onGoBack=\{onFilesGoBack\}/);
     expect(app).toMatch(/onGoForward=\{onFilesGoForward\}/);
-    expect(app).toMatch(/onSelectWorkspace=\{onSelectFilesWorkspace\}/);
+    expect(app).toMatch(/onSelectWorkspace=\{selectWorkspace\}/);
     expect(app).toMatch(/onLocationChange=\{onFilesLocationChange\}/);
     expect(app).toMatch(/onSelectView=\{selectView\}/);
     expect(app).toMatch(/pushToFilesDestination/);
     expect(app).toMatch(/onFilesDeepLink\(openFilesDeepLink\)/);
     expect(app).toMatch(
-      /activeView === "files"\s*\?\s*\(\s*<FilesView[\s\S]*?onSelectWorkspace=\{onSelectFilesWorkspace\}/
+      /if \(activeViewRef\.current === "files"\) \{\s*onSelectFilesWorkspace\(id\);/
+    );
+    expect(app).toMatch(
+      /activeView === "files"\s*\?\s*\(\s*<FilesView[\s\S]*?onLocationChange=\{onFilesLocationChange\}/
     );
   });
 
