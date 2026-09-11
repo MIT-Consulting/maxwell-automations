@@ -8,6 +8,14 @@ and version numbers follow [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-09-11
+
+### Fixed
+
+- Replace a real Tailscale address that leaked into a test fixture with a
+  documentation-range placeholder; add a gitleaks rule for the 100.64.0.0/10
+  range so the export scan catches this class going forward.
+
 ## [1.0.2] - 2026-09-10
 
 ### Fixed

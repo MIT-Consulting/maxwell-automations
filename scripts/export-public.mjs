@@ -82,8 +82,10 @@ export const LEAK_PATTERNS = [
     re: new RegExp(String.raw`C:[/\\]Code[/\\]` + joinLit(["Personal"]), "i"),
   },
   {
+    // Any Tailscale CGNAT address (100.64.0.0/10) except the documentation
+    // placeholders used in docs/tests: 100.64.0.x, 100.64.1.x, 100.127.255.1.
     id: "operator-tailnet",
-    re: new RegExp(String.raw`\b100\.` + joinLit(["78"]) + String.raw`\.\d{1,3}\.\d{1,3}\b`),
+    re: /\b100\.(?!64\.[01]\.\d{1,3}\b)(?!127\.255\.1\b)(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b/,
   },
   { id: "lab-hostname", re: new RegExp(joinLit(["lair", "-", "node"]), "i") },
   { id: "vault-dirname", re: new RegExp(joinLit(["second", "-", "brain"]), "i") },
