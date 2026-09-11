@@ -8,6 +8,13 @@ and version numbers follow [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-09-10
+
+### Fixed
+
+- Bump `actions/checkout` and `actions/setup-node` to v5 (silence Node 20
+  action-runtime deprecation annotations).
+
 ## [1.0.1] - 2026-09-10
 
 ### Fixed

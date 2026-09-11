@@ -16,7 +16,7 @@ deliberately with the changelog in hand.
 ```bash
 git clone https://github.com/MIT-Consulting/maxwell-automations.git
 cd maxwell-automations
-git checkout v1.0.0
+git checkout v1.0.1
 ```
 
 Skills bundle: same tag on `maxwell-automations-skills`. Breaking skill changes
