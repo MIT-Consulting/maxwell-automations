@@ -85,7 +85,7 @@ const SKIP_BASENAMES = new Set([".DS_Store"]);
 
 /** Personal-info / leak patterns scanned on the exported tree. */
 export const LEAK_PATTERNS = [
-  { id: "windows-user-path", re: /C:[/\\]Users[/\\](?!dev[/\\])/i },
+  { id: "windows-user-path", re: /C:[/\\]Users[/\\](?!dev(?:[/\\]|\b))/i },
   { id: "unix-user-path", re: /\/Users\/(?!dev\/)[A-Za-z0-9._-]+\//i },
   { id: "operator-windows-user", re: new RegExp(joinLit(["Miller", "Dev"]), "i") },
   {
@@ -216,7 +216,7 @@ function copyBinary(from, to) {
 }
 
 function isProbablyText(rel) {
-  return /\.(md|txt|ts|tsx|js|mjs|cjs|json|yml|yaml|toml|css|html|svg|gitignore)$/i.test(
+  return /\.(md|mdc|txt|ts|tsx|js|mjs|cjs|json|yml|yaml|toml|css|html|svg|gitignore)$/i.test(
     rel
   ) || /^(LICENSE|NOTICE|README)$/i.test(rel.split("/").pop() ?? "");
 }

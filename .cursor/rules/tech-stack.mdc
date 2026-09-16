@@ -93,7 +93,7 @@ stable implementation-facing names for the same product.
 - Git hooks stay dumb (just POST); match logic lives in the daemon. Append to existing hooks, never clobber.
 - Auth via `CURSOR_API_KEY` (likely in gitignored `~/.cursor-local-automations/.env`).
 - Shared files (tests, docs, fixtures) are exported publicly: use only placeholder
-  tailnet addresses (`100.64.0.x`, `100.64.1.x`, `100.127.255.1`) and the `C:\Users\dev`
+  tailnet addresses (`100.64.0.x`, `100.64.1.x`, `100.127.255.1`) and the `C:\Users\dev\`
   profile path — never a real machine address, username, or email.
   `npm run export:public -- --dry-run` is the gate and must print `leak-scan: clean`.
 - HTTP/WS bind to `127.0.0.1` by default; loopback is always allowlisted and

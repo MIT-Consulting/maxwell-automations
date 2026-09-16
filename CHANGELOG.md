@@ -8,6 +8,13 @@ and version numbers follow [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.5] - 2026-09-16
+
+### Fixed
+
+- Export leak-scan now reads `.mdc` rule files. The `C:\Users\dev` placeholder
+  is allowed as a complete path (Gitleaks previously required a trailing slash).
+
 ## [1.0.4] - 2026-09-16
 
 ### Added

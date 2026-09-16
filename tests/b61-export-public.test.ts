@@ -55,11 +55,16 @@ describe("export leak scan", () => {
   });
 
   it("allows the generic C:\\Users\\dev fixture root", () => {
-    const hits = scanLeaks(
+    const rooted = scanLeaks(
       "tests/example.test.ts",
       ["path: C:", "Users", "dev", "app", "packages", "dashboard", "src", "transcript.tsx"].join("\\")
     );
-    expect(hits).toEqual([]);
+    const bare = scanLeaks(
+      ".cursor/rules/tech-stack.mdc",
+      "use `C:\\Users\\dev` as the profile path"
+    );
+    expect(rooted).toEqual([]);
+    expect(bare).toEqual([]);
   });
 
   it("flags any tailnet address except the documentation placeholders", () => {
