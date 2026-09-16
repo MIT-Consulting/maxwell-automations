@@ -11,7 +11,8 @@ import { cn } from "@/lib/utils";
 import { api } from "./api";
 import {
   applyChatSessionToCollections,
-  mostRecentChat,
+  applyChatStatusToCollections,
+  decideChatAutoSelect,
   removeDeletedFromCollections,
   type ChatCollections,
 } from "./chatLifecycle";
@@ -81,37 +82,22 @@ export function ChatView({
     autoSelectedForWsRef.current = null;
   }, [activeWorkspaceId]);
 
-  // When opening Chats (or switching workspace), pick the newest active chat if
-  // nothing valid is selected. Skip re-select after an intentional clear (narrow back).
+  // Opening Chats with no selection picks the newest row. A selected id that is
+  // not in the list yet (New chat / promote) is kept until refetch completes.
   useEffect(() => {
-    if (!activeWorkspaceId) return;
-    if (workspaceChats.length === 0) return;
-    // Ignore one-frame stale lists after a workspace switch (clear runs in an effect).
-    if (workspaceChats.some((c) => c.workspaceId !== activeWorkspaceId)) {
-      return;
-    }
-
-    const selectionValid =
-      activeChatId != null &&
-      (workspaceChats.some((c) => c.id === activeChatId) ||
-        archivedChats.some((c) => c.id === activeChatId));
-
-    if (selectionValid) {
-      autoSelectedForWsRef.current = activeWorkspaceId;
-      return;
-    }
-
-    if (
-      activeChatId == null &&
-      autoSelectedForWsRef.current === activeWorkspaceId
-    ) {
-      return;
-    }
-
-    const first = mostRecentChat(workspaceChats);
-    if (!first) return;
+    const decision = decideChatAutoSelect({
+      activeWorkspaceId,
+      activeChatId,
+      workspaceChats,
+      archivedChats,
+      alreadyAutoSelectedForWorkspace:
+        autoSelectedForWsRef.current === activeWorkspaceId,
+      missingChatAlreadyRefetched:
+        missingChatRefetchRef.current === activeChatId,
+    });
+    if (decision.action === "keep") return;
     autoSelectedForWsRef.current = activeWorkspaceId;
-    onSelectChat(first.id);
+    if (decision.action === "select") onSelectChat(decision.chatId);
   }, [
     activeWorkspaceId,
     activeChatId,
@@ -199,6 +185,10 @@ export function ChatView({
             return applyChatSessionToCollections(prev, msg.session);
           });
           if (shouldDeselect) onSelectChat(null);
+        } else if (msg.type === "chat_status") {
+          setCollections((prev) =>
+            applyChatStatusToCollections(prev, msg.chatId, msg.status)
+          );
         } else if (msg.type === "chats_deleted") {
           setCollections((prev) =>
             removeDeletedFromCollections(prev, msg.chatIds)
@@ -220,6 +210,8 @@ export function ChatView({
     setCreateError(null);
     try {
       const chat = await api.createChat(activeWorkspaceId);
+      setCollections((prev) => applyChatSessionToCollections(prev, chat));
+      autoSelectedForWsRef.current = activeWorkspaceId;
       onSelectChat(chat.id);
       setListRefresh((n) => n + 1);
     } catch (err) {

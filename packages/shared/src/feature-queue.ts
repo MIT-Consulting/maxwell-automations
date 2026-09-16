@@ -3,11 +3,17 @@ export type FeatureQueueLineageRun = {
   status: string;
 };
 
-/** Done only when the terminal worker completed in the lineage. */
+export type FeatureQueueClassifyOutcome = "done" | "failed" | "running";
+
+/**
+ * Done only when the terminal worker completed. Failed only when a lineage
+ * run actually failed or was cancelled. Incomplete successful lineage stays
+ * running — the gap between a green worker and the next spawn is not a fail.
+ */
 export function classifyFeatureQueueOutcome(
   lineage: ReadonlyArray<FeatureQueueLineageRun>,
   terminalConfigKey: string
-): "done" | "failed" {
+): FeatureQueueClassifyOutcome {
   for (const run of lineage) {
     if (
       run.configKey === terminalConfigKey &&
@@ -16,7 +22,12 @@ export function classifyFeatureQueueOutcome(
       return "done";
     }
   }
-  return "failed";
+  for (const run of lineage) {
+    if (run.status === "failed" || run.status === "cancelled") {
+      return "failed";
+    }
+  }
+  return "running";
 }
 
 /** One-line doctor summary for a failed queue entry. */
@@ -24,7 +35,7 @@ export function featureQueueFailureDetail(
   lineage: ReadonlyArray<FeatureQueueLineageRun>,
   terminalConfigKey: string
 ): string {
-  if (classifyFeatureQueueOutcome(lineage, terminalConfigKey) === "done") {
+  if (classifyFeatureQueueOutcome(lineage, terminalConfigKey) !== "failed") {
     return "";
   }
   const failures = lineage.filter(

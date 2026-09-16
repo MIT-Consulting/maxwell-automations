@@ -181,7 +181,7 @@ describe("b58.2 feature queue runner", () => {
         TERMINAL_KEY
       )
     ).toBe("done");
-    expect(classifyFeatureQueueOutcome([], TERMINAL_KEY)).toBe("failed");
+    expect(classifyFeatureQueueOutcome([], TERMINAL_KEY)).toBe("running");
     expect(
       classifyFeatureQueueOutcome(
         [{ configKey: TERMINAL_KEY, status: "failed" }],
@@ -198,7 +198,7 @@ describe("b58.2 feature queue runner", () => {
         ],
         TERMINAL_KEY
       )
-    ).toBe("failed");
+    ).toBe("running");
     expect(
       featureQueueFailureDetail(
         [
@@ -392,6 +392,100 @@ describe("b58.2 feature queue runner", () => {
       expect(h.queueStore.getEntry(a.id)?.state).toBe("done");
       await until(() => h.triggerCalls.length >= 1);
       expect(h.queueStore.getRunningEntry(h.workspaceId)?.feature_id).toBe("b58b");
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  it("keeps a queue entry running across a successful non-terminal settle", async () => {
+    const h = await createHarness();
+    try {
+      const a = h.queueStore.enqueue({
+        workspaceId: h.workspaceId,
+        featureId: "b67a",
+        after: [],
+        kickoff: { automationId: h.entryAutomationId, maxDepth: 1 },
+      });
+      const b = h.queueStore.enqueue({
+        workspaceId: h.workspaceId,
+        featureId: "b67b",
+        after: ["b67a"],
+        kickoff: { automationId: h.entryAutomationId, maxDepth: 1 },
+      });
+      h.queueStore.enqueue({
+        workspaceId: h.workspaceId,
+        featureId: "b67c",
+        after: [],
+        kickoff: { automationId: h.entryAutomationId, maxDepth: 1 },
+      });
+      await h.runner.startNextIfIdle(h.workspaceId);
+      expect(h.triggerCalls).toHaveLength(1);
+      const rootRunId = h.queueStore.getRunningEntry(h.workspaceId)!.run_id!;
+      h.db.prepare(`UPDATE runs SET status = 'completed' WHERE id = ?`).run(rootRunId);
+      h.events.emitRunStatus(rootRunId, "completed");
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(h.queueStore.getEntry(a.id)?.state).toBe("running");
+      expect(h.queueStore.getEntry(b.id)?.state).toBe("queued");
+      expect(h.triggerCalls).toHaveLength(1);
+      expect(h.queueStore.getNewestEntryByFeatureId(h.workspaceId, "b67c")?.state).toBe(
+        "queued"
+      );
+
+      const terminalId = "terminal-green";
+      insertRun(h.db, {
+        id: terminalId,
+        automationId: automationId(
+          h.workspaceId,
+          GENERATED_CONFIG_KEY_PREFIX + IMPLEMENT_FULLY_FINAL_GATE_WORKER_KEY
+        ),
+        workspaceId: h.workspaceId,
+        status: "completed",
+        chainRootRunId: rootRunId,
+      });
+      h.events.emitRunStatus(terminalId, "completed");
+      await until(() => h.queueStore.getEntry(a.id)?.state === "done");
+      await until(() => h.queueStore.getEntry(b.id)?.state === "running");
+      expect(h.triggerCalls).toHaveLength(2);
+      expect(h.queueStore.getNewestEntryByFeatureId(h.workspaceId, "b67c")?.state).toBe(
+        "queued"
+      );
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  it("resumeQueue leaves incomplete successful lineage running", async () => {
+    const h = await createHarness();
+    try {
+      const a = h.queueStore.enqueue({
+        workspaceId: h.workspaceId,
+        featureId: "b67a",
+        after: [],
+        kickoff: { automationId: h.entryAutomationId, maxDepth: 1 },
+      });
+      h.queueStore.enqueue({
+        workspaceId: h.workspaceId,
+        featureId: "b67b",
+        after: ["b67a"],
+        kickoff: { automationId: h.entryAutomationId, maxDepth: 1 },
+      });
+      const rootRunId = "stale-incomplete";
+      insertRun(h.db, {
+        id: rootRunId,
+        automationId: h.entryAutomationId,
+        workspaceId: h.workspaceId,
+        status: "completed",
+        chainRootRunId: null,
+      });
+      h.db.prepare(
+        `UPDATE feature_queue_entries SET state = 'running', run_id = ? WHERE id = ?`
+      ).run(rootRunId, a.id);
+      await h.runner.resumeQueue();
+      expect(h.queueStore.getEntry(a.id)?.state).toBe("running");
+      expect(h.triggerCalls).toHaveLength(0);
+      expect(
+        h.queueStore.getNewestEntryByFeatureId(h.workspaceId, "b67b")?.state
+      ).toBe("queued");
     } finally {
       h.cleanup();
     }

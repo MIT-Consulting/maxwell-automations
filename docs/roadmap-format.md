@@ -19,7 +19,7 @@ unless this convention exists: there is nowhere durable to write phase state.
 Required pieces:
 
 1. A `<!-- next: b<n> -->` comment so `plan-skeleton` can allocate the next id.
-2. A `## Backlog` section with `- **b<n>** …` items (optional `[detailed plan](./file.md)` links).
+2. A `## Backlog` section with `- **b<n>** …` items (optional `[detailed plan](./file.md)` links). A short H2 suffix is allowed (`## Backlog (prioritized)`); `###` priority groups stay inside the section.
 3. A `## Completed` table:
 
    `| ID | Feature | Description | Docs |`

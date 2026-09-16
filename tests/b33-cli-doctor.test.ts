@@ -275,6 +275,16 @@ describe("diagnoseChat", () => {
     expect(verdict).toMatch(/resume retry/i);
   });
 
+  it("treats an error chat as resumable via a follow-up message", () => {
+    const snapshot: ChatSnapshot = {
+      session: baseSession({ status: "error" }),
+      events: [chatEvent(1, "chat.finished", { sdkStatus: "error", result: null })],
+    };
+    const verdict = diagnoseChat(snapshot, []);
+    expect(verdict).toMatch(/send a new message/i);
+    expect(verdict).toMatch(/transcript/i);
+  });
+
   it("treats idle as a normal usable success state", () => {
     const snapshot: ChatSnapshot = {
       session: baseSession({ status: "idle" }),

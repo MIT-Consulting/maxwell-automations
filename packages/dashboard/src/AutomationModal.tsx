@@ -19,6 +19,7 @@ import {
   type Workspace,
 } from "@lca/shared";
 import { api } from "./api";
+import { AddWorkspaceForm } from "./AddWorkspaceForm";
 import { workspaceLabel } from "./helpers";
 import { ModelSelect } from "./ModelSelect";
 import { PromptArtifactSuggestions } from "./PromptArtifactSuggestions";
@@ -223,10 +224,6 @@ export function AutomationModal(props: AutomationModalProps) {
   const [showAddWorkspace, setShowAddWorkspace] = useState(
     mode === "create" && workspaces.length === 0
   );
-  const [newWorkspacePath, setNewWorkspacePath] = useState("");
-  const [newWorkspaceName, setNewWorkspaceName] = useState("");
-  const [addingWorkspace, setAddingWorkspace] = useState(false);
-  const [pickingWorkspace, setPickingWorkspace] = useState(false);
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const [form, setForm] = useState<FormState>(() =>
@@ -273,60 +270,6 @@ export function AutomationModal(props: AutomationModalProps) {
     });
     setValidationError(null);
     setSubmitError(null);
-  };
-
-  const handleAddWorkspace = async () => {
-    setValidationError(null);
-    setSubmitError(null);
-    const path = newWorkspacePath.trim();
-    if (!path) {
-      setValidationError("Workspace path is required");
-      return;
-    }
-
-    setAddingWorkspace(true);
-    try {
-      const name = newWorkspaceName.trim();
-      const created = await api.createWorkspace({
-        path,
-        ...(name ? { name } : {}),
-      });
-      const updated = await api.listWorkspaces();
-      setLocalWorkspaces(updated);
-      setField("workspaceId", created.id);
-      setShowAddWorkspace(false);
-      setNewWorkspacePath("");
-      setNewWorkspaceName("");
-      onWorkspacesRefresh?.();
-    } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setAddingWorkspace(false);
-    }
-  };
-
-  const handleBrowseWorkspace = async () => {
-    setSubmitError(null);
-    setPickingWorkspace(true);
-    try {
-      // Seed the dialog at an existing workspace folder (the selected one if
-      // any, otherwise the first registered) so it opens somewhere useful.
-      const base =
-        localWorkspaces.find((w) => w.id === form.workspaceId)?.path ??
-        localWorkspaces[0]?.path;
-      const result = await api.pickWorkspaceFolder(base);
-      if (!result.supported) {
-        setSubmitError("Folder picker is Windows-only — type the path.");
-        return;
-      }
-      if (result.path) {
-        setNewWorkspacePath(result.path);
-      }
-    } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setPickingWorkspace(false);
-    }
   };
 
   const handleSubmit = async (e: FormEvent) => {
@@ -488,58 +431,23 @@ export function AutomationModal(props: AutomationModalProps) {
                       No workspaces registered yet. Add a path to continue.
                     </p>
                   )}
-                  <div className="flex items-stretch gap-2">
-                    <Input
-                      id="automation-workspace-path"
-                      className="min-w-0 flex-1"
-                      type="text"
-                      value={newWorkspacePath}
-                      onChange={(e) => setNewWorkspacePath(e.target.value)}
-                      placeholder="C:\path\to\repo"
-                      disabled={addingWorkspace || pickingWorkspace}
-                    />
-                    <Button
-                      type="button"
-                      variant="surface"
-                      className="shrink-0"
-                      onClick={() => void handleBrowseWorkspace()}
-                      disabled={addingWorkspace || pickingWorkspace}
-                    >
-                      {pickingWorkspace ? "Opening…" : "Browse…"}
-                    </Button>
-                  </div>
-                  <Input
-                    id="automation-workspace-name"
-                    type="text"
-                    value={newWorkspaceName}
-                    onChange={(e) => setNewWorkspaceName(e.target.value)}
-                    placeholder="Name (optional)"
-                    disabled={addingWorkspace}
+                  <AddWorkspaceForm
+                    existingWorkspaces={localWorkspaces}
+                    selectedWorkspaceId={form.workspaceId}
+                    idPrefix="automation-workspace"
+                    showCancel={localWorkspaces.length > 0}
+                    onCancel={() => {
+                      setShowAddWorkspace(false);
+                      setSubmitError(null);
+                    }}
+                    onCreated={async (created) => {
+                      const updated = await api.listWorkspaces();
+                      setLocalWorkspaces(updated);
+                      setField("workspaceId", created.id);
+                      setShowAddWorkspace(false);
+                      onWorkspacesRefresh?.();
+                    }}
                   />
-                  <div className="flex flex-wrap gap-2">
-                    <Button
-                      type="button"
-                      onClick={() => void handleAddWorkspace()}
-                      disabled={addingWorkspace || !newWorkspacePath.trim()}
-                    >
-                      {addingWorkspace ? "Registering…" : "Register workspace"}
-                    </Button>
-                    {localWorkspaces.length > 0 && (
-                      <Button
-                        type="button"
-                        variant="surface"
-                        onClick={() => {
-                          setShowAddWorkspace(false);
-                          setNewWorkspacePath("");
-                          setNewWorkspaceName("");
-                          setSubmitError(null);
-                        }}
-                        disabled={addingWorkspace}
-                      >
-                        Cancel
-                      </Button>
-                    )}
-                  </div>
                 </div>
               )}
             </div>

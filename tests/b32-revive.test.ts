@@ -258,6 +258,78 @@ function makeDeadSessionExecutor(options?: {
   };
 }
 
+/**
+ * Resume returns a live handle whose follow-up streams only `status` then
+ * wait() reports SDK error — the live "chat stuck in error" pattern.
+ */
+function makeZombieResumeExecutor(options?: {
+  spawnFails?: boolean;
+  withAssistantOutput?: boolean;
+}): {
+  executor: Executor;
+  spawnCalls: () => number;
+  resumeCalls: () => number;
+} {
+  let spawns = 0;
+  let resumes = 0;
+
+  const makeZombie = (): ActiveRun => ({
+    kind: "sdk-local",
+    agentId: "agent-zombie",
+    sdkRunId: "sdk-zombie",
+    async *stream() {
+      if (options?.withAssistantOutput) {
+        yield {
+          type: "assistant",
+          message: { content: [{ type: "text", text: "partial reply" }] },
+        } as never;
+      } else {
+        yield { type: "status" } as never;
+      }
+    },
+    wait: async () => ({ status: "error", result: null }) as never,
+    cancel: async () => undefined,
+    dispose: async () => undefined,
+  });
+
+  return {
+    spawnCalls: () => spawns,
+    resumeCalls: () => resumes,
+    executor: {
+      kind: "sdk-local",
+      spawn: async () => {
+        spawns += 1;
+        if (options?.spawnFails) {
+          throw new Error("revive spawn exploded");
+        }
+        return {
+          kind: "sdk-local",
+          agentId: "agent-revived",
+          sdkRunId: "sdk-revived",
+          async *stream() {
+            yield {
+              type: "assistant",
+              message: { content: [{ type: "text", text: "revived reply" }] },
+            } as never;
+          },
+          wait: async () => ({ status: "finished", result: "ok" }) as never,
+          cancel: async () => undefined,
+          dispose: async () => undefined,
+        };
+      },
+      resume: async () => {
+        resumes += 1;
+        const shell = makeZombie();
+        return {
+          ...shell,
+          async *stream() {},
+          sendFollowUp: async () => makeZombie(),
+        };
+      },
+    },
+  };
+}
+
 describe("b32 run-engine revive tier", () => {
   it("revives a follow-up after exhausted not-found retries", async () => {
     const root = mkdtempSync(join(tmpdir(), "lca-b32-run-happy-"));
@@ -651,6 +723,133 @@ describe("b32 chat-engine revive tier", () => {
         reason?: string;
       }>;
       expect(errors.some((p) => p.reason === "auth_expired")).toBe(true);
+      expect(chatEventTypes(db, "chat")).not.toContain("chat.revived");
+    } finally {
+      await engine.shutdown();
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("revives from transcript when sending into an error chat", async () => {
+    const root = mkdtempSync(join(tmpdir(), "lca-b32-chat-error-send-"));
+    const db = openDatabase(join(root, "state.sqlite"));
+    const zombie = makeZombieResumeExecutor();
+    const engine = new ChatEngine(db, {
+      apiKey: "test-key",
+      executor: zombie.executor,
+    });
+
+    try {
+      seedWorkspace(db, join(root, "workspace"));
+      seedChat(db, { chatId: "chat" });
+      db.prepare("UPDATE chat_sessions SET status = 'error' WHERE id = 'chat'").run();
+      seedChatEvent(db, "chat", 1, "chat.message", {
+        role: "user",
+        text: "earlier turn",
+      });
+      seedChatEvent(db, "chat", 2, "chat.finished", {
+        sdkStatus: "error",
+        result: null,
+      });
+
+      void engine.sendMessage("chat", "try again");
+      await until(() => chatStatus(db, "chat") === "idle");
+
+      expect(zombie.resumeCalls()).toBe(0);
+      expect(zombie.spawnCalls()).toBe(1);
+      expect(chatEventTypes(db, "chat")).toContain("chat.revived");
+      expect(chatEventTypes(db, "chat")).not.toContain("chat.resumed");
+      expect(chatAgentIds(db, "chat")).toEqual({
+        agent_id: "agent-revived",
+        sdk_run_id: "sdk-revived",
+      });
+    } finally {
+      await engine.shutdown();
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("auto-revives when resume returns a handle that errors with no output", async () => {
+    const root = mkdtempSync(join(tmpdir(), "lca-b32-chat-empty-sdk-"));
+    const db = openDatabase(join(root, "state.sqlite"));
+    const zombie = makeZombieResumeExecutor();
+    const engine = new ChatEngine(db, {
+      apiKey: "test-key",
+      executor: zombie.executor,
+    });
+
+    try {
+      seedWorkspace(db, join(root, "workspace"));
+      seedChat(db, { chatId: "chat" });
+
+      void engine.sendMessage("chat", "hello after idle");
+      await until(() => chatStatus(db, "chat") === "idle");
+
+      expect(zombie.resumeCalls()).toBe(1);
+      expect(zombie.spawnCalls()).toBe(1);
+      expect(chatEventTypes(db, "chat")).toContain("chat.resumed");
+      expect(chatEventTypes(db, "chat")).toContain("chat.revived");
+      expect(chatStatus(db, "chat")).toBe("idle");
+    } finally {
+      await engine.shutdown();
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not auto-revive a partial SDK error; the next send does", async () => {
+    const root = mkdtempSync(join(tmpdir(), "lca-b32-chat-partial-sdk-"));
+    const db = openDatabase(join(root, "state.sqlite"));
+    const zombie = makeZombieResumeExecutor({ withAssistantOutput: true });
+    const engine = new ChatEngine(db, {
+      apiKey: "test-key",
+      executor: zombie.executor,
+    });
+
+    try {
+      seedWorkspace(db, join(root, "workspace"));
+      seedChat(db, { chatId: "chat" });
+
+      void engine.sendMessage("chat", "first");
+      await until(() => chatStatus(db, "chat") === "error");
+
+      expect(zombie.resumeCalls()).toBe(1);
+      expect(zombie.spawnCalls()).toBe(0);
+      expect(chatEventTypes(db, "chat")).not.toContain("chat.revived");
+
+      void engine.sendMessage("chat", "second");
+      await until(() => chatStatus(db, "chat") === "idle");
+
+      expect(zombie.resumeCalls()).toBe(1);
+      expect(zombie.spawnCalls()).toBe(1);
+      expect(chatEventTypes(db, "chat")).toContain("chat.revived");
+    } finally {
+      await engine.shutdown();
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves an empty SDK error as error when sessionRevive is off", async () => {
+    const root = mkdtempSync(join(tmpdir(), "lca-b32-chat-empty-kill-"));
+    const db = openDatabase(join(root, "state.sqlite"));
+    const zombie = makeZombieResumeExecutor();
+    const engine = new ChatEngine(db, {
+      apiKey: "test-key",
+      executor: zombie.executor,
+      sessionRevive: false,
+    });
+
+    try {
+      seedWorkspace(db, join(root, "workspace"));
+      seedChat(db, { chatId: "chat" });
+
+      void engine.sendMessage("chat", "no revive");
+      await until(() => chatStatus(db, "chat") === "error");
+
+      expect(zombie.spawnCalls()).toBe(0);
       expect(chatEventTypes(db, "chat")).not.toContain("chat.revived");
     } finally {
       await engine.shutdown();

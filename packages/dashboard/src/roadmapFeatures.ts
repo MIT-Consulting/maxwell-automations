@@ -18,7 +18,7 @@ const BACKLOG_BULLET_RE = /^-\s+\*\*(b\d+)\*\*\s+(.+?)\s+—/;
 // Completed / Documented Ideas table rows: `| b50 | Title | ... |`
 const TABLE_ROW_RE = /^\|\s*(b\d+)\s*\|\s*([^|]+?)\s*\|/;
 const SECTION_HEADER_RE =
-  /^##\s+(Backlog|Completed|Documented Ideas)\s*$/i;
+  /^##\s+(Backlog|Completed|Documented Ideas)(?:\s+.+)?\s*$/i;
 
 function sectionFromHeader(name: string): RoadmapFeatureSection {
   const key = name.trim().toLowerCase();

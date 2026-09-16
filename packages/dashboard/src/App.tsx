@@ -1661,7 +1661,9 @@ export function App() {
               activeWorkspaceId={activeWorkspaceId}
               onSelectAllWorkspaces={selectAllWorkspaces}
               onSelectWorkspace={selectWorkspace}
+              onWorkspacesRefresh={refresh}
               showAllOption={activeView === "board"}
+              compactAdd
             />
             {activeView === "board" && (
               <Button
@@ -1692,6 +1694,7 @@ export function App() {
             activeWorkspaceId={activeWorkspaceId}
             onSelectAllWorkspaces={selectAllWorkspaces}
             onSelectWorkspace={selectWorkspace}
+            onWorkspacesRefresh={refresh}
             search={search}
             onSearchChange={setSearch}
             onResetLayout={resetColumnLayout}
@@ -1955,6 +1958,7 @@ export function App() {
                 activeWorkspaceId={activeWorkspaceId}
                 onSelectAllWorkspaces={selectAllWorkspaces}
                 onSelectWorkspace={selectWorkspace}
+                onWorkspacesRefresh={refresh}
                 search={search}
                 onSearchChange={setSearch}
                 onResetLayout={resetColumnLayout}

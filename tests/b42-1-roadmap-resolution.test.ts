@@ -316,6 +316,62 @@ describe("b42.1 resolveImplementFullyKickoff (existing feature)", () => {
     );
   });
 
+  it("treats ## Backlog (prioritized) as the Backlog section", () => {
+    withTempWorkspace(
+      (workspace) => {
+        writeIndex(
+          workspace,
+          `# Roadmap
+
+<!-- next: b68 -->
+
+## Epics
+
+| ID | Epic | Children |
+| --- | ---- | -------- |
+| e1 | Pre-season | b66, b67 |
+
+## Documented Ideas
+
+| ID | Idea | Status | File |
+| --- | -------------------------- | -------- | ---- |
+| b21 | Commercialization | Planned | [x](./commercial.md) |
+
+## Backlog (prioritized)
+
+### P3 — Public-Facing & Data
+
+- **b67** Include playoff games in player GP / season totals — count final playoff boxes.
+
+## Completed
+
+| ID | Feature | Description | Docs |
+| --- | -------------------------- | ----------- | ---- |
+| b65 | Team pages | Roster and schedule | [docs](./done/b65-team-pages/00-index.md) |
+`
+        );
+      },
+      (workspace) => {
+        const resolved = resolveImplementFullyKickoff(
+          workspace,
+          { kind: "feature-id", featureId: "b67" },
+          BOUNDS
+        );
+        expect(resolved.featureId).toBe("b67");
+        expect(resolved.featureSlug).toBe(
+          "b67-include-playoff-games-in-player-gp"
+        );
+        expect(resolved.idea).toContain("Include playoff games");
+        expect(resolved.idea).toContain("count final playoff boxes");
+        assertKickoffCompatible(
+          resolved.featureId,
+          resolved.featureSlug,
+          resolved.idea
+        );
+      }
+    );
+  });
+
   it("uses a single document stem and row-derived slug when needed", () => {
     withTempWorkspace(
       (workspace) => {

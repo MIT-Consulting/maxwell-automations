@@ -768,7 +768,7 @@ multi-feature concurrency is not shipped yet (serial queue only).
 
 | Command | Meaning |
 | --- | --- |
-| `lca queue add --feature <bN>` | Enqueue documented work (options mirror implement-fully) |
+| `lca queue add --feature <bN>` | Enqueue documented work (options mirror implement-fully, including `--dry-run`) |
 | `lca queue add --idea "<text>"` | Enqueue new work from an idea |
 | `lca queue list` | List entries for all workspaces (bare `lca queue` aliases list) |
 | `lca queue rm <id>` | Cancel a waiting (`queued` or `blocked`) entry |
@@ -776,11 +776,16 @@ multi-feature concurrency is not shipped yet (serial queue only).
 
 **`--after`:** comma-separated feature ids (`b58`, `b49`, …). Dependencies must
 already exist as queue rows or prior `done` entries in the same workspace. The CLI
-parses the flag; the daemon validates edges at enqueue.
+parses the flag; the daemon validates edges at enqueue. A dependent stays queued
+until the dependency is **`done`** (green `final-gate`). Intermediate worker
+success does not settle the predecessor, and a false `failed` does not park
+`--after` rows.
 
 **Entry states:** `queued`, `running`, `done`, `failed`, `blocked`, `cancelled`.
-A failure parks direct dependents one hop (`blocked`). The queue does not replay
-completed batches after daemon restart.
+A row stays `running` while its pipeline lineage is incomplete and has not
+failed or been cancelled — including the gap after a green worker before the
+next spawn. A failure parks direct dependents one hop (`blocked`). The queue
+does not replay completed batches after daemon restart.
 
 **Staleness (AD3):** kickoff variables and role models are snapshotted on the row at
 enqueue time. Edits to global role recipes or planning settings **after** enqueue do

@@ -153,11 +153,13 @@ export function useChatStream(chatId: string | null): ChatStream {
     };
   }, [chatId, applySnapshot]);
 
-  // Persist events to module cache whenever they change for the active chat.
+  // Persist on `bySeq` only. Depending on `chatId` wrote the previous chat's
+  // events into the incoming chat's cache before the seed reset flushed.
   useEffect(() => {
-    if (!chatId) return;
-    eventCache.set(chatId, new Map(bySeq));
-  }, [chatId, bySeq]);
+    const id = chatIdRef.current;
+    if (!id) return;
+    eventCache.set(id, new Map(bySeq));
+  }, [bySeq]);
 
   // Live updates over a chat-local WebSocket.
   useEffect(() => {

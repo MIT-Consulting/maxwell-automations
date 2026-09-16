@@ -5,6 +5,47 @@ import type { McpOverlay, ModelSelection, UpdateNotifySettingsInput } from "@lca
 import { modelConfigForYaml } from "../models/selection-persist.js";
 import { workspaceChatConfigPath } from "../paths.js";
 
+function loadYamlDocument(configPath: string): ReturnType<typeof parseDocument> {
+  mkdirSync(dirname(configPath), { recursive: true });
+  if (!existsSync(configPath)) {
+    return parseDocument("{}");
+  }
+  const raw = readFileSync(configPath, "utf8");
+  return parseDocument(raw.trim() ? raw : "{}");
+}
+
+function ensureYamlSeq(
+  doc: ReturnType<typeof parseDocument>,
+  key: string
+): YAMLSeq {
+  const existing = doc.get(key);
+  if (isSeq(existing)) {
+    return existing;
+  }
+  doc.set(key, doc.createNode([]));
+  const created = doc.get(key);
+  if (!isSeq(created)) {
+    throw new Error(`Failed to initialize ${key} sequence in config`);
+  }
+  return created;
+}
+
+function ensureYamlMap(
+  doc: ReturnType<typeof parseDocument>,
+  key: string
+): YAMLMap {
+  const existing = doc.get(key);
+  if (isMap(existing)) {
+    return existing;
+  }
+  doc.set(key, doc.createNode({}));
+  const created = doc.get(key);
+  if (!isMap(created)) {
+    throw new Error(`Failed to initialize ${key} map in config`);
+  }
+  return created;
+}
+
 /**
  * Append a workspace path to the global config `workspaces` list, preserving
  * YAML comments/formatting via `parseDocument`. Idempotent: returns false when
@@ -15,28 +56,9 @@ export function appendWorkspaceToConfig(
   workspacePath: string
 ): boolean {
   const resolved = resolve(workspacePath);
+  const doc = loadYamlDocument(configPath);
+  const seq = ensureYamlSeq(doc, "workspaces");
 
-  mkdirSync(dirname(configPath), { recursive: true });
-
-  let doc;
-  if (existsSync(configPath)) {
-    const raw = readFileSync(configPath, "utf8");
-    doc = parseDocument(raw.trim() ? raw : "{}");
-  } else {
-    doc = parseDocument("{}");
-  }
-
-  let workspaces = doc.get("workspaces");
-  if (!workspaces || !isSeq(workspaces)) {
-    doc.set("workspaces", []);
-    workspaces = doc.get("workspaces");
-  }
-
-  if (!workspaces || !isSeq(workspaces)) {
-    throw new Error("Failed to initialize workspaces sequence in config");
-  }
-
-  const seq: YAMLSeq = workspaces;
   for (const item of seq.items) {
     const raw =
       item && typeof item === "object" && "value" in item
@@ -107,16 +129,7 @@ export function writeWorkspaceChatDefaults(
   }
 ): void {
   const configPath = workspaceChatConfigPath(workspacePath);
-  const cursorDir = dirname(configPath);
-  mkdirSync(cursorDir, { recursive: true });
-
-  let doc;
-  if (existsSync(configPath)) {
-    const raw = readFileSync(configPath, "utf8");
-    doc = parseDocument(raw.trim() ? raw : "{}");
-  } else {
-    doc = parseDocument("{}");
-  }
+  const doc = loadYamlDocument(configPath);
 
   const modelYaml =
     typeof defaults.model === "string" ||
@@ -176,15 +189,7 @@ function readYamlNtfyServer(
 }
 
 function ensureSettingsMap(doc: ReturnType<typeof parseDocument>): YAMLMap {
-  let settings = doc.get("settings");
-  if (!settings || !isMap(settings)) {
-    doc.set("settings", {});
-    settings = doc.get("settings");
-  }
-  if (!settings || !isMap(settings)) {
-    throw new Error("Failed to initialize settings map in config");
-  }
-  return settings;
+  return ensureYamlMap(doc, "settings");
 }
 
 /**
@@ -195,15 +200,7 @@ export function writeNotifySettings(
   configPath: string,
   patch: UpdateNotifySettingsInput
 ): void {
-  mkdirSync(dirname(configPath), { recursive: true });
-
-  let doc;
-  if (existsSync(configPath)) {
-    const raw = readFileSync(configPath, "utf8");
-    doc = parseDocument(raw.trim() ? raw : "{}");
-  } else {
-    doc = parseDocument("{}");
-  }
+  const doc = loadYamlDocument(configPath);
 
   ensureSettingsMap(doc);
   const preservedToken = readYamlNtfyToken(doc);

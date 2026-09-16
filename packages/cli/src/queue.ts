@@ -92,6 +92,25 @@ async function cmdQueueAdd(
     );
   }
 
+  if (impl.dryRun) {
+    console.log("Dry run — nothing written.");
+    console.log(built.summaryLines.join("\n"));
+    console.log("Queue payload:");
+    console.log(
+      JSON.stringify(
+        {
+          workspaceId: built.workspace.id,
+          featureId: built.resolved.featureId,
+          after,
+          kickoff: built.kickoff,
+        },
+        null,
+        2
+      )
+    );
+    return;
+  }
+
   try {
     await client.provisionPipelineWorkers(IMPLEMENT_FULLY_PIPELINE_ID, {
       workspaceId: built.workspace.id,

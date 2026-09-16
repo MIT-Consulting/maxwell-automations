@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import {
   Braces,
   ChevronLeft,
@@ -18,6 +18,12 @@ import type { Workspace } from "@lca/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -31,6 +37,7 @@ import {
 } from "@/components/ui/tooltip";
 import { StatusDot } from "@/components/StatusDot";
 import { cn } from "@/lib/utils";
+import { AddWorkspaceForm } from "./AddWorkspaceForm";
 import { workspaceLabel } from "./helpers";
 export type ControlBarProps = {
   connected: boolean;
@@ -47,6 +54,7 @@ export type ControlBarProps = {
   activeWorkspaceId: string | null;
   onSelectAllWorkspaces: () => void;
   onSelectWorkspace: (id: string) => void;
+  onWorkspacesRefresh: () => void;
   search: string;
   onSearchChange: (value: string) => void;
   onResetLayout: () => void;
@@ -67,9 +75,12 @@ export type WorkspacePickerProps = {
   activeWorkspaceId: string | null;
   onSelectAllWorkspaces: () => void;
   onSelectWorkspace: (id: string) => void;
+  onWorkspacesRefresh: () => void;
   /** "All" only makes sense as a Board aggregate — Chat/Files/Settings always
    *  need exactly one focused workspace, so they never offer it. */
   showAllOption: boolean;
+  /** Icon-only Add control (mobile header). Desktop uses a text link. */
+  compactAdd?: boolean;
   className?: string;
 };
 
@@ -87,9 +98,12 @@ export function WorkspacePicker({
   activeWorkspaceId,
   onSelectAllWorkspaces,
   onSelectWorkspace,
+  onWorkspacesRefresh,
   showAllOption,
+  compactAdd = false,
   className,
 }: WorkspacePickerProps) {
+  const [addOpen, setAddOpen] = useState(false);
   const value =
     showAllOption && boardScopeAll
       ? ALL_WORKSPACES_VALUE
@@ -108,44 +122,95 @@ export function WorkspacePicker({
         ? workspaceLabel(activeWorkspaceId, workspaces)
         : undefined;
 
+  const openAdd = (): void => setAddOpen(true);
+
   return (
-    <Select
-      value={value}
-      onValueChange={(v) => {
-        if (v === ALL_WORKSPACES_VALUE) onSelectAllWorkspaces();
-        else onSelectWorkspace(v);
-      }}
+    <div
+      className={cn(
+        "flex min-w-0",
+        compactAdd ? "flex-1 items-center gap-1.5" : "flex-col gap-1.5"
+      )}
     >
-      <SelectTrigger
-        className={cn(
-          "w-full border-border bg-muted font-medium shadow-md transition-shadow hover:shadow-lg data-[state=open]:shadow-lg",
-          className
-        )}
-        aria-label="Workspace"
+      <div className={cn("min-w-0", compactAdd && "flex-1")}>
+        <Select
+        value={value}
+        onValueChange={(v) => {
+          if (v === ALL_WORKSPACES_VALUE) onSelectAllWorkspaces();
+          else onSelectWorkspace(v);
+        }}
       >
-        <SelectValue placeholder="Select workspace">
-          {triggerLabel !== undefined ? (
-            <span className="truncate">{triggerLabel}</span>
-          ) : undefined}
-        </SelectValue>
-      </SelectTrigger>
-      <SelectContent>
-        {showAllOption && (
-          <SelectItem value={ALL_WORKSPACES_VALUE}>
-            All ({totalCount})
-          </SelectItem>
-        )}
-        {pickerWorkspaces.map((w) => (
-          <SelectItem key={w.id} value={w.id}>
-            {/* Automation counts are Board context — showing them on
-                Chat/Files/Settings implies a relevance they don't have there. */}
-            {showAllOption
-              ? `${workspaceLabel(w.id, workspaces)} (${automationCountByWs.get(w.id) ?? 0})`
-              : workspaceLabel(w.id, workspaces)}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
+        <SelectTrigger
+          className={cn(
+            "w-full border-border bg-muted font-medium shadow-md transition-shadow hover:shadow-lg data-[state=open]:shadow-lg",
+            className
+          )}
+          aria-label="Workspace"
+        >
+          <SelectValue placeholder="Select workspace">
+            {triggerLabel !== undefined ? (
+              <span className="truncate">{triggerLabel}</span>
+            ) : undefined}
+          </SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          {showAllOption && (
+            <SelectItem value={ALL_WORKSPACES_VALUE}>
+              All ({totalCount})
+            </SelectItem>
+          )}
+          {pickerWorkspaces.map((w) => (
+            <SelectItem key={w.id} value={w.id}>
+              {/* Automation counts are Board context — showing them on
+                  Chat/Files/Settings implies a relevance they don't have there. */}
+              {showAllOption
+                ? `${workspaceLabel(w.id, workspaces)} (${automationCountByWs.get(w.id) ?? 0})`
+                : workspaceLabel(w.id, workspaces)}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      </div>
+      {compactAdd ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="size-9 shrink-0 text-muted-foreground hover:text-foreground"
+          aria-label="Add workspace"
+          onClick={openAdd}
+        >
+          <Plus />
+        </Button>
+      ) : (
+        <Button
+          type="button"
+          variant="link"
+          className="h-auto justify-start self-start p-0 text-sm"
+          onClick={openAdd}
+        >
+          Add workspace…
+        </Button>
+      )}
+      <Dialog open={addOpen} onOpenChange={setAddOpen}>
+        <DialogContent className="sm:max-w-md" aria-describedby={undefined}>
+          <DialogHeader>
+            <DialogTitle>Add workspace</DialogTitle>
+          </DialogHeader>
+          <AddWorkspaceForm
+            existingWorkspaces={pickerWorkspaces}
+            selectedWorkspaceId={activeWorkspaceId}
+            idPrefix="sidebar-add-workspace"
+            onCreated={(created) => {
+              setAddOpen(false);
+              onWorkspacesRefresh();
+              onSelectWorkspace(created.id);
+            }}
+            onCancel={() => setAddOpen(false)}
+            showCancel
+          />
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }
 
@@ -377,6 +442,7 @@ export function ControlBar({
   activeWorkspaceId,
   onSelectAllWorkspaces,
   onSelectWorkspace,
+  onWorkspacesRefresh,
   search,
   onSearchChange,
   onResetLayout,
@@ -575,6 +641,7 @@ export function ControlBar({
           activeWorkspaceId={activeWorkspaceId}
           onSelectAllWorkspaces={onSelectAllWorkspaces}
           onSelectWorkspace={onSelectWorkspace}
+          onWorkspacesRefresh={onWorkspacesRefresh}
           showAllOption={showBoardCluster}
         />
       </div>

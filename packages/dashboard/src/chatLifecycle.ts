@@ -48,6 +48,20 @@ export function applyChatSessionToCollections(
   };
 }
 
+/** Patch a chat's live status in whichever collection holds the id. */
+export function applyChatStatusToCollections(
+  collections: ChatCollections,
+  chatId: string,
+  status: ChatSession["status"]
+): ChatCollections {
+  const patch = (chats: ChatSession[]): ChatSession[] =>
+    chats.map((chat) => (chat.id === chatId ? { ...chat, status } : chat));
+  return {
+    active: patch(collections.active),
+    archived: patch(collections.archived),
+  };
+}
+
 /** Remove deleted chat ids from both collections. */
 export function removeDeletedFromCollections(
   collections: ChatCollections,
@@ -108,4 +122,56 @@ export function sortChatsByRecency(chats: ChatSession[]): ChatSession[] {
 export function mostRecentChat(chats: ChatSession[]): ChatSession | null {
   const sorted = sortChatsByRecency(chats);
   return sorted[0] ?? null;
+}
+
+export type ChatAutoSelectDecision =
+  | { action: "keep" }
+  | { action: "mark" }
+  | { action: "select"; chatId: string };
+
+/**
+ * Auto-select when the list loads with no valid selection.
+ * Keep a selected id that is not in the list yet (just created / still fetching).
+ */
+export function decideChatAutoSelect(input: {
+  activeWorkspaceId: string | null;
+  activeChatId: string | null;
+  workspaceChats: ChatSession[];
+  archivedChats: ChatSession[];
+  alreadyAutoSelectedForWorkspace: boolean;
+  missingChatAlreadyRefetched: boolean;
+}): ChatAutoSelectDecision {
+  const {
+    activeWorkspaceId,
+    activeChatId,
+    workspaceChats,
+    archivedChats,
+    alreadyAutoSelectedForWorkspace,
+    missingChatAlreadyRefetched,
+  } = input;
+
+  if (!activeWorkspaceId) return { action: "keep" };
+  if (workspaceChats.length === 0) return { action: "keep" };
+  if (workspaceChats.some((c) => c.workspaceId !== activeWorkspaceId)) {
+    return { action: "keep" };
+  }
+
+  const selectionInList =
+    activeChatId != null &&
+    (workspaceChats.some((c) => c.id === activeChatId) ||
+      archivedChats.some((c) => c.id === activeChatId));
+
+  if (selectionInList) return { action: "mark" };
+
+  if (activeChatId != null && !missingChatAlreadyRefetched) {
+    return { action: "keep" };
+  }
+
+  if (activeChatId == null && alreadyAutoSelectedForWorkspace) {
+    return { action: "keep" };
+  }
+
+  const first = mostRecentChat(workspaceChats);
+  if (!first) return { action: "keep" };
+  return { action: "select", chatId: first.id };
 }

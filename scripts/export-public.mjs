@@ -21,6 +21,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -29,6 +30,16 @@ export const REPO_ROOT = resolve(__dirname, "..");
 
 export const CODE_REPO = "maxwell-automations";
 export const SKILLS_REPO = "maxwell-automations-skills";
+
+/**
+ * Identity every public snapshot commit must carry. Pinned into the export
+ * clones' repo-local git config so the operator's global user.email never
+ * reaches public history.
+ */
+export const PUBLIC_GIT_IDENTITY = {
+  name: "MIT-Consulting",
+  email: "MIT-Consulting@users.noreply.github.com",
+};
 
 function joinLit(parts) {
   return parts.join("");
@@ -86,6 +97,10 @@ export const LEAK_PATTERNS = [
     // placeholders used in docs/tests: 100.64.0.x, 100.64.1.x, 100.127.255.1.
     id: "operator-tailnet",
     re: /\b100\.(?!64\.[01]\.\d{1,3}\b)(?!127\.255\.1\b)(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b/,
+  },
+  {
+    id: "operator-email",
+    re: new RegExp(joinLit(["the\\.david", "jmiller@"]), "i"),
   },
   { id: "lab-hostname", re: new RegExp(joinLit(["lair", "-", "node"]), "i") },
   { id: "vault-dirname", re: new RegExp(joinLit(["second", "-", "brain"]), "i") },
@@ -310,6 +325,10 @@ export function exportPublic(opts) {
     }
   }
 
+  const pinnedIdentity = opts.dryRun
+    ? []
+    : [codeDest, skillsDest].filter((dest) => pinPublicGitIdentity(dest));
+
   return {
     outDir,
     codeDest,
@@ -318,7 +337,31 @@ export function exportPublic(opts) {
     written,
     leaks,
     dryRun: opts.dryRun,
+    pinnedIdentity,
   };
+}
+
+/**
+ * If `dest` is a git clone, force repo-local user.name/user.email to the
+ * public identity so snapshot commits made there can't inherit the operator's
+ * global config. Returns true when a clone was found and pinned.
+ * @param {string} dest
+ */
+export function pinPublicGitIdentity(dest, identity = PUBLIC_GIT_IDENTITY) {
+  if (!existsSync(join(dest, ".git"))) return false;
+  const git = (...args) =>
+    execFileSync("git", ["-C", dest, ...args], { stdio: "pipe" })
+      .toString()
+      .trim();
+  git("config", "user.name", identity.name);
+  git("config", "user.email", identity.email);
+  const effective = git("config", "--get", "user.email");
+  if (effective !== identity.email) {
+    throw new Error(
+      `export: could not pin public git identity in ${dest} (got ${effective})`
+    );
+  }
+  return true;
 }
 
 function parseArgs(argv) {
@@ -368,4 +411,14 @@ if (isMain) {
     process.exit(1);
   }
   console.log("leak-scan: clean");
+  for (const dest of result.pinnedIdentity) {
+    console.log(
+      `git identity: ${relative(REPO_ROOT, dest) || dest} → ${PUBLIC_GIT_IDENTITY.email}`
+    );
+  }
+  if (!opts.dryRun && result.pinnedIdentity.length === 0) {
+    console.log(
+      `git identity: no clone at destination — commit snapshots as ${PUBLIC_GIT_IDENTITY.email}`
+    );
+  }
 }

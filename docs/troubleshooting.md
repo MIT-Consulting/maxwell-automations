@@ -313,6 +313,9 @@ for the same feature). In `lca doctor` health output, look for
      run is still `queued` / `running` / `needs_input`, the slot is occupied.
      Finish or cancel that run first (`lca queue add` intentionally skips this
      guard at enqueue time only).
+  4. **`running` with no live worker** — expected between a green worker and the
+     next spawn, and until `final-gate`. Do not treat that as a failed feature.
+     `lca queue add --dry-run` validates without enqueueing.
 - **Parallel waves (implement-fully)** — start with bare `lca doctor`. Expect
   `tracks running`, `barrier wait`, `blocked waves`, and `cleanup required`. A
   run-specific Pipeline block may also show

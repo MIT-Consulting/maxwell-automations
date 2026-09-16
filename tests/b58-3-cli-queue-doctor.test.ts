@@ -265,6 +265,38 @@ describe("b58.3 cmdQueue", () => {
     });
   });
 
+  it("add --dry-run prints payload and writes nothing", async () => {
+    await withServer(async ({ workspacePath, workspaceId, client, queueStore, db }) => {
+      const prev = process.cwd();
+      process.chdir(workspacePath);
+      try {
+        const logCalls: unknown[][] = [];
+        vi.spyOn(console, "log").mockImplementation((...args) => {
+          logCalls.push(args);
+        });
+        const provision = vi.spyOn(client, "provisionPipelineWorkers");
+        const enqueue = vi.spyOn(client, "enqueueFeature");
+        await cmdQueue(client, ["add", ...FEATURE_ARGS, "--dry-run"]);
+        expect(enqueue).not.toHaveBeenCalled();
+        const realProvision = provision.mock.calls.filter(
+          (call) => call[1]?.dryRun === false
+        );
+        expect(realProvision).toHaveLength(0);
+        const output = logCalls.map((c) => c.join(" ")).join("\n");
+        expect(output).toMatch(/Dry run — nothing written/);
+        expect(output).toMatch(/Queue payload/);
+      } finally {
+        process.chdir(prev);
+      }
+
+      expect(queueStore.listEntries(workspaceId)).toHaveLength(0);
+      const autoCount = (
+        db.prepare("SELECT COUNT(*) AS n FROM automations").get() as { n: number }
+      ).n;
+      expect(autoCount).toBe(0);
+    });
+  });
+
   it("surfaces daemon 400 for unknown dependency", async () => {
     await withServer(async ({ workspacePath, client }) => {
       const prev = process.cwd();

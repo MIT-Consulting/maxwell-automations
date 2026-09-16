@@ -484,6 +484,13 @@ export function ChatConversation({
         </div>
       )}
 
+      {chatStatus === "error" && !isArchived && (
+        <div className="shrink-0 border-b border-border bg-muted/50 px-4 py-2 text-xs text-muted-foreground">
+          The last turn failed. Send a message to continue — this chat will
+          resume from the conversation so far.
+        </div>
+      )}
+
       {isArchived && (
         <div className="shrink-0 border-b border-border bg-muted/50 px-4 py-2 text-xs text-muted-foreground">
           This chat is archived and read-only. Unarchive it to send messages.

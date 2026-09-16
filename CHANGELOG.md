@@ -8,8 +8,29 @@ and version numbers follow [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-09-16
+
+### Added
+
+- Auto-select the first workspace chat when the Chat view has no current
+  conversation.
+- Sidebar Add workspace uses the same `POST /api/workspaces` path as the
+  new-automation form.
+
 ### Fixed
 
+- YAML writer initializes empty sequence and map nodes so Add workspace,
+  notify settings, and chat defaults do not throw on a missing or `{}`
+  config.
+- Feature queue stays `running` until a lineage run actually fails or is
+  cancelled, or final-gate settles; do not start the next row in the
+  green-worker gap. `max queue add --dry-run` prints the payload and skips
+  enqueue.
+- Chat revive recovers error turns from the transcript instead of leaving
+  the conversation stuck.
+- Public export pins snapshot commits to
+  `MIT-Consulting <MIT-Consulting@users.noreply.github.com>` and scans the
+  operator email as a split literal.
 - Public Gitleaks workflow now actually loads `gitleaks.toml` (the action only
   auto-discovers the dotted filename, so the custom personal-info rules were
   silently unused) and supports manual full-history runs via `workflow_dispatch`.

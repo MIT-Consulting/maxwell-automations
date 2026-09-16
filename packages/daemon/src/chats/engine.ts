@@ -523,7 +523,8 @@ export class ChatEngine {
           row.sdk_run_id!,
           operatorMessage,
           abort,
-          sessionToken
+          sessionToken,
+          { preferRevive: row.status === "error" }
         )
       );
     }
@@ -576,7 +577,21 @@ export class ChatEngine {
         this.activeChats.set(chatId, activeRun);
         this.store.setAgentIds(chatId, activeRun.agentId, activeRun.sdkRunId);
       }
-      await this.consumeAndFinalize(chatId, activeRun, abort.signal);
+      const outcome = await this.consumeAndFinalize(chatId, activeRun, abort.signal);
+      const recovered = await this.reviveAfterEmptySdkError(
+        chatId,
+        ctx,
+        activeRun.agentId,
+        activeRun.sdkRunId,
+        message,
+        abort,
+        sessionToken,
+        outcome
+      );
+      if (recovered) {
+        await this.disposeQuietly(activeRun);
+        activeRun = recovered;
+      }
     } catch (err) {
       this.handleTurnError(chatId, err, abort);
     } finally {
@@ -591,10 +606,37 @@ export class ChatEngine {
     sdkRunId: string,
     message: OperatorMessage,
     abort: AbortController,
-    sessionToken: string
+    sessionToken: string,
+    options?: { preferRevive?: boolean }
   ): Promise<void> {
     let activeRun: ActiveRun | undefined;
     try {
+      if (options?.preferRevive && this.sessionRevive && !abort.signal.aborted) {
+        this.log(
+          `Chat ${chatId}: prior turn failed; reviving from transcript instead of resuming a dead session`
+        );
+        const revived = await this.reviveChatTurn(
+          chatId,
+          ctx,
+          agentId,
+          sdkRunId,
+          message,
+          abort,
+          sessionToken
+        );
+        if (revived) {
+          activeRun = revived;
+          return;
+        }
+        this.handleTurnError(
+          chatId,
+          new Error("session revive failed"),
+          abort,
+          true
+        );
+        return;
+      }
+
       activeRun = await this.resumeChatWithRetry(
         chatId,
         () =>
@@ -627,7 +669,21 @@ export class ChatEngine {
       this.activeChats.set(chatId, next);
       this.store.setAgentIds(chatId, next.agentId, next.sdkRunId);
       activeRun = next;
-      await this.consumeAndFinalize(chatId, activeRun, abort.signal);
+      const outcome = await this.consumeAndFinalize(chatId, activeRun, abort.signal);
+      const recovered = await this.reviveAfterEmptySdkError(
+        chatId,
+        ctx,
+        agentId,
+        sdkRunId,
+        message,
+        abort,
+        sessionToken,
+        outcome
+      );
+      if (recovered) {
+        await this.disposeQuietly(activeRun);
+        activeRun = recovered;
+      }
     } catch (err) {
       const messageText =
         err instanceof CursorAgentError
@@ -707,6 +763,7 @@ export class ChatEngine {
     }
 
     try {
+      this.reenterRunningIfError(chatId);
       this.activeChats.set(chatId, fresh);
       this.store.setAgentIds(chatId, fresh.agentId, fresh.sdkRunId);
       this.store.appendEvent(chatId, "chat.revived", {
@@ -730,7 +787,15 @@ export class ChatEngine {
         this.activeChats.set(chatId, fresh);
         this.store.setAgentIds(chatId, fresh.agentId, fresh.sdkRunId);
       }
-      await this.consumeAndFinalize(chatId, fresh, abort.signal);
+      const outcome = await this.consumeAndFinalize(chatId, fresh, abort.signal);
+      // A revive turn does not recurse. Persist error if the fresh agent also
+      // died with no output so settleTurn does not treat it as a clean idle.
+      if (outcome.emptySdkError) {
+        const cur = this.store.getChatSession(chatId);
+        if (cur && cur.status === "running") {
+          this.transition(chatId, "running", "error");
+        }
+      }
     } catch (err) {
       // The revive spawn succeeded; a later failure is a genuine turn error of
       // the revived agent, handled exactly like a normal spawn turn's.
@@ -743,11 +808,15 @@ export class ChatEngine {
     chatId: string,
     activeRun: ActiveRun,
     signal: AbortSignal
-  ): Promise<void> {
+  ): Promise<{ emptySdkError: boolean }> {
+    let meaningfulOutput = false;
     for await (const message of activeRun.stream()) {
       if (signal.aborted) {
         await activeRun.cancel();
-        return;
+        return { emptySdkError: false };
+      }
+      if (message.type !== "status") {
+        meaningfulOutput = true;
       }
       const sdkRunId = extractRunIdFromMessage(message);
       if (sdkRunId) {
@@ -759,18 +828,89 @@ export class ChatEngine {
       this.store.appendEvent(chatId, message.type, message as SDKMessage);
     }
 
-    if (signal.aborted) return;
+    if (signal.aborted) return { emptySdkError: false };
 
     const result = await activeRun.wait();
     this.store.appendEvent(chatId, "chat.finished", {
       sdkStatus: result.status,
       result: result.result ?? null,
     });
-    if (mapSdkResultStatus(result.status) === "failed") {
+    if (mapSdkResultStatus(result.status) !== "failed") {
+      return { emptySdkError: false };
+    }
+
+    // Status-only (or empty) SDK error: leave the chat running so the caller
+    // can revive without a status flash. Partial output then error is a real
+    // failed turn — persist `error` and let the next send revive.
+    const emptySdkError = !meaningfulOutput;
+    if (!emptySdkError) {
       const cur = this.store.getChatSession(chatId);
       if (cur && cur.status === "running") {
         this.transition(chatId, "running", "error");
       }
+    }
+    return { emptySdkError };
+  }
+
+  /**
+   * After resume (or spawn) succeeds as a handle but wait() returns error with
+   * no assistant/tool output, the local session is dead. Revive once.
+   */
+  private async reviveAfterEmptySdkError(
+    chatId: string,
+    ctx: ChatContext,
+    previousAgentId: string,
+    previousSdkRunId: string,
+    message: OperatorMessage,
+    abort: AbortController,
+    sessionToken: string,
+    outcome: { emptySdkError: boolean }
+  ): Promise<ActiveRun | undefined> {
+    if (!outcome.emptySdkError || abort.signal.aborted) return undefined;
+    if (!this.sessionRevive) {
+      const cur = this.store.getChatSession(chatId);
+      if (cur && cur.status === "running") {
+        this.transition(chatId, "running", "error");
+      }
+      return undefined;
+    }
+
+    this.log(
+      `Chat ${chatId}: SDK turn ended with no output; reviving from transcript`
+    );
+    const revived = await this.reviveChatTurn(
+      chatId,
+      ctx,
+      previousAgentId,
+      previousSdkRunId,
+      message,
+      abort,
+      sessionToken
+    );
+    if (revived) return revived;
+
+    this.handleTurnError(
+      chatId,
+      new Error("SDK error with no output"),
+      abort,
+      true
+    );
+    return undefined;
+  }
+
+  private reenterRunningIfError(chatId: string): void {
+    const cur = this.store.getChatSession(chatId);
+    if (cur?.status === "error") {
+      this.transition(chatId, "error", "running");
+    }
+  }
+
+  private async disposeQuietly(activeRun: ActiveRun | undefined): Promise<void> {
+    if (!activeRun) return;
+    try {
+      await activeRun.dispose();
+    } catch {
+      /* ignore */
     }
   }
 

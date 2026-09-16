@@ -141,6 +141,9 @@ export class FeatureQueueRunner {
   }
 
   private async classifyRunningEntry(workspaceId: string): Promise<void> {
+    if (this.hasPipelineBlocker(workspaceId)) {
+      return;
+    }
     const running = this.queueStore.getRunningEntry(workspaceId);
     if (!running?.run_id) {
       return;
@@ -150,6 +153,9 @@ export class FeatureQueueRunner {
       lineage,
       IMPLEMENT_FULLY_TERMINAL_CONFIG_KEY
     );
+    if (outcome === "running") {
+      return;
+    }
     const detail =
       outcome === "failed"
         ? featureQueueFailureDetail(lineage, IMPLEMENT_FULLY_TERMINAL_CONFIG_KEY)
@@ -214,6 +220,9 @@ export class FeatureQueueRunner {
 
   private async tryStartNext(workspaceId: string): Promise<boolean> {
     if (this.hasPipelineBlocker(workspaceId)) {
+      return false;
+    }
+    if (this.queueStore.getRunningEntry(workspaceId)) {
       return false;
     }
     const queued = this.queueStore.listQueuedEntries(workspaceId);

@@ -1,9 +1,12 @@
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  PUBLIC_GIT_IDENTITY,
   isIncluded,
+  pinPublicGitIdentity,
   scanLeaks,
   transformContent,
 } from "../scripts/export-public.mjs";
@@ -57,6 +60,57 @@ describe("export leak scan", () => {
       ["path: C:", "Users", "dev", "app", "packages", "dashboard", "src", "transcript.tsx"].join("\\")
     );
     expect(hits).toEqual([]);
+  });
+
+  it("flags any tailnet address except the documentation placeholders", () => {
+    const real = ["100", "77", "138", "106"].join(".");
+    const hits = scanLeaks(
+      "tests/example.test.ts",
+      [
+        `host: "${real}"`,
+        'ok: "100.64.0.2"',
+        'ok: "100.64.1.9"',
+        'ok: "100.127.255.1"',
+        "range: 100.64.0.0/10",
+      ].join("\n")
+    );
+    expect(hits.map((h) => [h.id, h.line])).toEqual([["operator-tailnet", 1]]);
+  });
+
+  it("flags the operator's personal email address in content", () => {
+    const addr = ["the.david", "jmiller", "@gmail.com"].join("");
+    const hits = scanLeaks("CHANGELOG.md", `Author: ${addr}`);
+    expect(hits.map((h) => h.id)).toEqual(["operator-email"]);
+  });
+});
+
+describe("export git identity", () => {
+  it("pins the public identity into a clone at the destination", () => {
+    const dir = mkdtempSync(join(tmpdir(), "max-export-id-"));
+    try {
+      const git = (...args: string[]) =>
+        execFileSync("git", ["-C", dir, ...args], { stdio: "pipe" })
+          .toString()
+          .trim();
+      git("init", "-q");
+      git("config", "user.email", "operator@example.invalid");
+      expect(pinPublicGitIdentity(dir)).toBe(true);
+      expect(git("config", "--get", "user.email")).toBe(
+        PUBLIC_GIT_IDENTITY.email
+      );
+      expect(git("config", "--get", "user.name")).toBe(PUBLIC_GIT_IDENTITY.name);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("is a no-op for a plain directory", () => {
+    const dir = mkdtempSync(join(tmpdir(), "max-export-plain-"));
+    try {
+      expect(pinPublicGitIdentity(dir)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

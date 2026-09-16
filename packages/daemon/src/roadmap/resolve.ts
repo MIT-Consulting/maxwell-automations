@@ -167,9 +167,16 @@ function deriveSlug(featureId: string, source: string): string {
   return `${featureId}-${suffix}`;
 }
 
+function sectionHeadingRe(heading: string): RegExp {
+  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // Optional H2 suffix so `## Backlog (prioritized)` still counts as Backlog.
+  // The next `## ` heading still ends the section (`###` P1–P5 stay inside).
+  return new RegExp(`^##\\s+${escaped}(?:\\s+.+)?\\s*$`, "i");
+}
+
 function sectionBody(markdown: string, heading: string): string | null {
   const lines = markdown.split(/\r?\n/);
-  const headingRe = new RegExp(`^##\\s+${heading}\\s*$`, "i");
+  const headingRe = sectionHeadingRe(heading);
   const start = lines.findIndex((line) => headingRe.test(line));
   if (start < 0) return null;
   let end = lines.length;

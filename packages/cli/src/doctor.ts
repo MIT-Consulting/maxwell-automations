@@ -1041,7 +1041,8 @@ export function diagnoseChat(
       );
     }
     return (
-      "SDK returned error with no captured reason; see the correlated log window above." +
+      "SDK returned error with no captured reason. Send a new message to continue — " +
+      "the next turn revives from the stored transcript instead of reusing the dead session." +
       evidence
     );
   }
@@ -1051,7 +1052,10 @@ export function diagnoseChat(
   }
 
   if (session.status === "error") {
-    return `error: chat is in a failed state.${evidence}`;
+    return (
+      "error: last turn failed. Send a new message to continue — " +
+      `the chat will revive from the stored transcript.${evidence}`
+    );
   }
 
   const last = events.at(-1);
