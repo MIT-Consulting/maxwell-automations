@@ -9,6 +9,7 @@ import {
 } from "react";
 import {
   ArrowRightLeft,
+  ArrowUpCircle,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -16,17 +17,19 @@ import {
   FolderOpen,
   MessageSquare,
   Plus,
+  RefreshCw,
   Rocket,
   Search,
   Settings,
   Trash2,
   X,
 } from "lucide-react";
-import type {
-  Automation,
-  ChatSession,
-  Run,
-  RunEscalationAction,
+import {
+  updateChipLabel,
+  type Automation,
+  type ChatSession,
+  type Run,
+  type RunEscalationAction,
 } from "@lca/shared";
 import { cn } from "@/lib/utils";
 import { api, EscalationError, onAuthRequired } from "./api";
@@ -82,6 +85,7 @@ import {
   type FilesNavState,
 } from "./filesNavigation";
 import { SettingsView } from "./SettingsView";
+import { useDaemonStatus } from "./useDaemonStatus";
 import { LogsModal } from "./LogsModal";
 import { PipelineKickoffModal } from "./PipelineKickoffModal";
 import {
@@ -642,6 +646,19 @@ export function App() {
     },
     [pushToFilesDestination]
   );
+
+  const { status: daemonStatus, reload: reloadDaemonStatus } =
+    useDaemonStatus(connected);
+  const [aboutNonce, setAboutNonce] = useState(0);
+  const openAbout = useCallback((): void => {
+    setAboutNonce((n) => n + 1);
+    selectView("settings");
+  }, [selectView]);
+  const updateChip = useMemo(() => {
+    const label = updateChipLabel(daemonStatus);
+    if (!label) return null;
+    return { label, onOpen: openAbout };
+  }, [daemonStatus, openAbout]);
 
   const onFilesLocationChange = useCallback((loc: FilesLocation): void => {
     const workspaceId = activeWorkspaceIdRef.current;
@@ -1646,6 +1663,26 @@ export function App() {
             <h1 className="m-0 min-w-0 truncate text-base font-semibold tracking-[0.2px]">
               Max
             </h1>
+            {updateChip && (
+              <button
+                type="button"
+                onClick={updateChip.onOpen}
+                className={cn(
+                  "flex max-w-[10rem] items-center gap-1.5 truncate rounded-full border px-2.5 py-1 text-xs font-medium cursor-pointer transition-all duration-150",
+                  updateChip.label.includes("Restart")
+                    ? "border-amber-500/40 bg-amber-500/15 text-amber-300 hover:border-amber-500 hover:bg-amber-500/25"
+                    : "border-primary/40 bg-primary/15 text-blue-300 hover:border-primary hover:bg-primary/25 hover:text-blue-100"
+                )}
+                title={`${updateChip.label} — open Settings → About`}
+              >
+                {updateChip.label.includes("Restart") ? (
+                  <RefreshCw className="size-3 shrink-0 text-amber-400" />
+                ) : (
+                  <ArrowUpCircle className="size-3 shrink-0 text-primary" />
+                )}
+                <span className="truncate">{updateChip.label}</span>
+              </button>
+            )}
             <StatusDot
               status={connected ? "live" : "offline"}
               title={connected ? "Daemon connected" : "Daemon offline"}
@@ -1705,6 +1742,7 @@ export function App() {
             }
             activeView={activeView}
             onSelectView={selectView}
+            updateChip={updateChip}
           />
         )}
 
@@ -1733,6 +1771,8 @@ export function App() {
             workspaces={chatWorkspaces}
             activeWorkspaceId={activeWorkspaceId}
             isNarrow={isNarrowViewport}
+            aboutNonce={aboutNonce}
+            onUpdateChanged={() => void reloadDaemonStatus()}
           />
         ) : search.trim() === "" &&
           visibleAutomations.length === 0 &&
@@ -1973,6 +2013,7 @@ export function App() {
                 onExport={(format) =>
                   downloadExport(format, boardScopeAll ? null : activeWorkspaceId)
                 }
+                updateChip={updateChip}
               />
             </MobileFilterSheet>
           </div>

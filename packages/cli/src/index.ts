@@ -16,7 +16,7 @@ import type {
   RunEscalationAction,
   WsServerMessage,
 } from "@lca/shared";
-import { RUN_ESCALATION_ACTIONS } from "@lca/shared";
+import { RUN_ESCALATION_ACTIONS, formatUpdateSummary, type UpdateSnapshot } from "@lca/shared";
 import {
   DaemonClient,
   DaemonError,
@@ -81,6 +81,13 @@ import {
   tailscaleIp,
   type NetworkConfig,
 } from "./remote.js";
+import {
+  checkUpdateLocally,
+  cliVersionLine,
+  formatUpdateCheckReport,
+  formatVersionReport,
+  loadCliIdentity,
+} from "./version.js";
 
 const LCA_HOME = join(homedir(), ".cursor-local-automations");
 const ENV_PATH = join(LCA_HOME, ".env");
@@ -691,6 +698,9 @@ async function cmdDoctorHealth(client: DaemonClient): Promise<void> {
     console.log(`  uptime: ${formatUptime(live.uptimeMs)} (since ${live.startedAt})`);
     const logPath = live.mode === "dev" ? DEV_LOG_PATH : DAEMON_ERR_LOG;
     console.log(`  log:    ${logPath}`);
+    if (live.updateState) {
+      console.log(`  update: ${formatUpdateSummary(live)}`);
+    }
   }
 
   console.log(`\nCURSOR_API_KEY: ${readCursorApiKeyInfo()}`);
@@ -1180,6 +1190,42 @@ function hardKillPortListener(port: number): boolean {
   return true;
 }
 
+async function cmdVersion(client: DaemonClient): Promise<void> {
+  const identity = loadCliIdentity();
+  const live = await readLiveStatus(client);
+  if (!live) {
+    console.log(formatVersionReport(identity, null));
+    return;
+  }
+  const factoryStub = live.version === "0.0.0" || live.version === "0.0.0-dev";
+  const snapshot: UpdateSnapshot = {
+    running: live.running ?? {
+      version: live.version,
+      channel: live.version === "0.0.0-dev" ? "factory" : "unknown",
+    },
+    checkout: live.checkout ?? identity.checkout,
+    available: live.available ?? null,
+    publicAvailable: live.publicAvailable ?? null,
+    updateState: live.updateState ?? (factoryStub ? "ahead/dev" : "unknown"),
+    lastCheckedAt: live.lastCheckedAt ?? null,
+    releaseUrl: live.releaseUrl ?? null,
+  };
+  console.log(formatVersionReport(identity, snapshot));
+}
+
+async function cmdUpdateCheck(client: DaemonClient): Promise<void> {
+  if (await daemonReachable(client)) {
+    try {
+      console.log(formatUpdateCheckReport(await client.checkUpdate()));
+      return;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!message.startsWith("404")) throw err;
+    }
+  }
+  console.log(formatUpdateCheckReport(await checkUpdateLocally()));
+}
+
 async function cmdStatus(client: DaemonClient): Promise<void> {
   const live = await readLiveStatus(client);
 
@@ -1199,6 +1245,9 @@ async function cmdStatus(client: DaemonClient): Promise<void> {
   console.log(`  url:        ${client.base}`);
   console.log(`  uptime:     ${formatUptime(live.uptimeMs)} (since ${live.startedAt})`);
   console.log(`  version:    ${live.version}`);
+  if (live.updateState) {
+    console.log(`  update:     ${formatUpdateSummary(live)}`);
+  }
 
   const remoteOn = isRemoteEnabled({
     host: live.host,
@@ -1773,6 +1822,9 @@ Usage:
   max down                       Stop daemon or dev stack (mode-aware)
   max restart [dev|prod]         Restart; bare restart keeps current mode
   max status                     Instance health, mode, remote, counts
+  max --version                  Print the CLI build version
+  max version                    Running, checkout, and update state
+  max update check               Refresh the approved-release check
   max logs --daemon [-f]         Tail daemon or dev rig log (-f to follow)
   max list [--workspace, -w <id|name|path>]
                                  Show automations and recent run states
@@ -1863,6 +1915,19 @@ async function main(): Promise<void> {
     case "-h":
     case "--help":
       printHelp();
+      return;
+    case "--version":
+    case "-V":
+      console.log(cliVersionLine());
+      return;
+    case "version":
+      await cmdVersion(client);
+      return;
+    case "update":
+      if (rest[0] !== "check") {
+        throw new DaemonError("Usage: max update check");
+      }
+      await cmdUpdateCheck(client);
       return;
     case "up":
     case "start": {

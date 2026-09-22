@@ -12,6 +12,7 @@ export * from "./pipeline-kickoff.js";
 export * from "./resolve-steer-target.js";
 export * from "./feature-queue.js";
 export * from "./prompt-references.js";
+export * from "./version.js";
 export * from "./schemas/config.js";
 export * from "./schemas/chat-config.js";
 export * from "./schemas/chat.js";

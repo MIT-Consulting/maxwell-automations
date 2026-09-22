@@ -301,6 +301,21 @@ export const notifySettingsSchema = z.strictObject({
   ntfy: ntfyNotifySettingsSchema.optional(),
 });
 
+const githubRepoName = z
+  .string()
+  .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/);
+
+/** Approved-release check (b68). Absent keys use daemon defaults. */
+export const updateSettingsSchema = z.strictObject({
+  check: z.boolean().optional(),
+  repo: githubRepoName.optional(),
+  publicRepo: githubRepoName.optional(),
+  cacheHours: z.number().positive().optional(),
+  token: z.string().min(1).optional(),
+  /** GitHub API origin. Default `https://api.github.com`. Enterprise base URL allowed. */
+  host: z.string().min(1).optional(),
+});
+
 // Daemon-wide runtime knobs. All optional with daemon-side defaults; values are
 // coerced/clamped by `loadSettings` so a stale or aggressive config never wedges
 // the daemon. `strictObject` rejects typos (e.g. `maxConcurrency`) with a clear
@@ -335,6 +350,8 @@ export const settingsSchema = z.strictObject({
   maxFileViewerEntries: z.number().int().positive().optional(),
   /** Optional phone-notify sinks (b48). Absent means disabled. */
   notify: notifySettingsSchema.optional(),
+  /** Approved-release awareness (b68). Absent uses the public repo and a 24h cache. */
+  update: updateSettingsSchema.optional(),
 });
 
 export const globalConfigYamlSchema = z.object({

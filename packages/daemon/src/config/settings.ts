@@ -1,11 +1,14 @@
 import {
   DEFAULT_NOTIFY_EVENT_PREFS,
+  DEFAULT_UPDATE_REPO,
   mergeNotifyEventPrefs,
+  resolveUpdateSettings,
   modelSelectionFromLegacy,
   normalizeModelSelection,
   PIPELINE_MODEL_ROLES,
   type DaemonSettings,
   type ModelConfigValue,
+  type UpdateSettingsResolved,
   type ModelSelection,
   type NotifySettings,
   type NtfyNotifySettings,
@@ -103,6 +106,11 @@ export type ResolvedSettings = {
    * notify is hot-reloadable via `loadNotifySettings` (PATCH + config watcher).
    */
   notify: ResolvedNotifySettings;
+  /**
+   * Approved-release check. Loaded once at startup. The token is never logged
+   * and never returned on `/api/status`.
+   */
+  update: UpdateSettingsResolved;
 };
 
 export const DEFAULT_ATTACHMENT_MIME_TYPES = [
@@ -145,6 +153,13 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
   maxFileViewerEntries: 1000,
   notify: {
     events: DEFAULT_NOTIFY_EVENT_PREFS,
+  },
+  update: {
+    check: true,
+    repo: DEFAULT_UPDATE_REPO,
+    publicRepo: null,
+    cacheHours: 24,
+    host: null,
   },
 };
 
@@ -567,6 +582,17 @@ export function loadSettings(
     ),
     // YAML only — no env precedence / LCA_NO_NTFY here (transport phase).
     notify: resolveNotifySettings(fileSettings.notify),
+    update: resolveUpdateSettings({
+      file: fileSettings.update,
+      env: {
+        check: envBool("LCA_UPDATE_CHECK"),
+        repo: envStr("LCA_UPDATE_REPO"),
+        publicRepo: envStr("LCA_UPDATE_PUBLIC_REPO"),
+        cacheHours: envInt("LCA_UPDATE_CACHE_HOURS"),
+        token: envStr("LCA_UPDATE_TOKEN"),
+        host: envStr("LCA_UPDATE_HOST"),
+      },
+    }),
   };
 
   const safety = validateNetworkSettings(resolved.host, resolved.allowedIps, {

@@ -1,7 +1,7 @@
-import { mkdirSync, openSync } from "node:fs";
+import { mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { join } from "node:path";
-import { HALT_DISCOVERY_INPUT_KIND } from "@lca/shared";
+import { dirname, join } from "node:path";
+import { HALT_DISCOVERY_INPUT_KIND, UpdateChecker } from "@lca/shared";
 import { openDatabase } from "./db/index.js";
 import { reconcileConfig } from "./config/reconcile.js";
 import { loadSettings, loadNotifySettings } from "./config/settings.js";
@@ -46,6 +46,7 @@ import { assertTransition } from "./runs/state-machine.js";
 import { AttachmentStore } from "./attachments/store.js";
 import { startAttachmentSweepScheduler } from "./attachments/sweep.js";
 import { LCA_HOME, GLOBAL_CONFIG_PATH } from "./paths.js";
+import { loadInstallIdentity } from "./version/install.js";
 
 function log(message: string): void {
   const ts = new Date().toISOString();
@@ -468,6 +469,42 @@ async function main(): Promise<void> {
     restart: async () => {},
   };
 
+  const install = loadInstallIdentity(import.meta.url);
+  const updateCachePath = join(LCA_HOME, "update-cache.json");
+  const updates = new UpdateChecker({
+    settings: settings.update,
+    running: install.running,
+    checkout: install.checkout,
+    readCache: () => {
+      try {
+        return readFileSync(updateCachePath, "utf8");
+      } catch {
+        return null;
+      }
+    },
+    writeCache: (text) => {
+      mkdirSync(dirname(updateCachePath), { recursive: true });
+      writeFileSync(updateCachePath, text);
+    },
+    fetch: async (url, init) => {
+      const response = await fetch(url, init);
+      return {
+        status: response.status,
+        ok: response.ok,
+        headers: { get: (name) => response.headers.get(name) },
+        json: () => response.json() as Promise<unknown>,
+      };
+    },
+    log: (message) => log(message),
+  });
+  if (updates.shouldPoll()) {
+    updates.maybeRefresh();
+  }
+  const updateTimer = setInterval(() => {
+    void updates.checkNow();
+  }, updates.pollIntervalMs());
+  updateTimer.unref();
+
   const http = await startHttpServer({
     engine,
     chatEngine,
@@ -497,6 +534,11 @@ async function main(): Promise<void> {
         return buildNotifySettingsPublic(reloadAndApplyNotify());
       },
       testSend: () => notifier.testNtfy(),
+    },
+    updates: {
+      snapshot: () => updates.snapshot(),
+      checkNow: () => updates.checkNow(),
+      checkoutRoot: () => install.checkoutRoot,
     },
   });
   log(
@@ -546,6 +588,7 @@ async function main(): Promise<void> {
   // daemon is spawned before this process exits.
   const teardown = async (relaunch: boolean) => {
     await watcher.close();
+    clearInterval(updateTimer);
     chainRunner.stop();
     featureQueueRunner.stop();
     unsubscribeHaltDiscoveryNotifications();

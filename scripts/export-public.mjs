@@ -54,6 +54,7 @@ export const INCLUDE_PREFIXES = [
   "LICENSE",
   "NOTICE",
   "CHANGELOG.md",
+  "version.json",
   "CONTRIBUTING.md",
   "README.md",
   ".gitignore",
@@ -233,14 +234,42 @@ function emptyDirKeepGit(dir) {
   }
 }
 
+/** @param {string} input */
+export function normalizeReleaseVersion(input) {
+  const value = String(input).trim().replace(/^v/, "");
+  if (!/^\d+\.\d+\.\d+$/.test(value)) {
+    throw new Error(`export: version must be semver (got ${input})`);
+  }
+  return value;
+}
+
+/** @param {string} changelog */
+export function changelogReleaseVersion(changelog) {
+  const match = changelog.match(/^## \[(\d+\.\d+\.\d+)\]/m);
+  return match ? match[1] : null;
+}
+
+/** @param {string} version semver without a v prefix */
+export function publicVersionJson(version) {
+  return `${JSON.stringify({ version, channel: "public" }, null, 2)}\n`;
+}
+
 /**
- * @param {{ outDir: string, dryRun: boolean }} opts
+ * @param {{ outDir: string, dryRun: boolean, version?: string }} opts
  */
 export function exportPublic(opts) {
   const outDir = resolve(opts.outDir);
   const codeDest = join(outDir, CODE_REPO);
   const skillsDest = join(outDir, SKILLS_REPO);
   const files = listIncludedFiles();
+  const releaseVersion = opts.version
+    ? normalizeReleaseVersion(opts.version)
+    : changelogReleaseVersion(readFileSync(join(REPO_ROOT, "CHANGELOG.md"), "utf8"));
+  if (!releaseVersion) {
+    throw new Error(
+      "export: pass --version <semver> or add a ## [x.y.z] heading to CHANGELOG.md"
+    );
+  }
   /** @type {{ id: string, file: string, line: number, excerpt: string }[]} */
   const leaks = [];
   /** @type {string[]} */
@@ -257,7 +286,10 @@ export function exportPublic(opts) {
     const dest = join(codeDest, ...rel.split("/"));
     if (isProbablyText(rel)) {
       const raw = readFileSync(src, "utf8");
-      const text = transformContent(rel, raw);
+      const text =
+        rel === "version.json"
+          ? publicVersionJson(releaseVersion)
+          : transformContent(rel, raw);
       for (const hit of scanLeaks(rel, text)) {
         leaks.push({ file: rel, ...hit });
       }
@@ -367,26 +399,32 @@ export function pinPublicGitIdentity(dest, identity = PUBLIC_GIT_IDENTITY) {
 function parseArgs(argv) {
   let dryRun = false;
   let outDir = join(REPO_ROOT, ".export-public");
+  let version;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--dry-run") dryRun = true;
-    else if (a === "--out") {
+    else if (a === "--version") {
+      const next = argv[++i];
+      if (!next) throw new Error("--version requires a semver");
+      version = next;
+    } else if (a === "--out") {
       const next = argv[++i];
       if (!next) throw new Error("--out requires a directory");
       outDir = resolve(next);
     } else if (a === "--help" || a === "-h") {
       console.log(
-        "Usage: node scripts/export-public.mjs [--dry-run] [--out <dir>]\n" +
+        "Usage: node scripts/export-public.mjs [--dry-run] [--out <dir>] [--version <semver>]\n" +
           "  Allowlist export to maxwell-automations + maxwell-automations-skills.\n" +
-          "  --dry-run  scan without writing\n" +
-          "  --out DIR  destination (default: .export-public/)"
+          "  --dry-run          scan without writing\n" +
+          "  --out DIR          destination (default: .export-public/)\n" +
+          "  --version x.y.z    public version.json stamp (default: newest CHANGELOG heading)"
       );
       process.exit(0);
     } else {
       throw new Error(`Unknown argument: ${a}`);
     }
   }
-  return { dryRun, outDir };
+  return { dryRun, outDir, version };
 }
 
 const isMain =

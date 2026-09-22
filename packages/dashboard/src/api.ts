@@ -50,6 +50,8 @@ import {
   type Workspace,
   type WorkspaceChatDefaults,
   type WorkspaceArtifact,
+  type DaemonStatus,
+  type UpdateSnapshot,
   type WorkspaceFileContentResponse,
   type WorkspaceMutationResponse,
 } from "@lca/shared";
@@ -512,6 +514,16 @@ export const api = {
    * arrives — is expected and treated as success. The dashboard's WS reconnect
    * loop will re-attach once the fresh daemon is back on the same port.
    */
+  async daemonStatus(): Promise<DaemonStatus> {
+    return jsonOrThrow<DaemonStatus>(await request("/api/status"));
+  },
+
+  async checkForUpdate(): Promise<UpdateSnapshot & { ok: true }> {
+    return jsonOrThrow<UpdateSnapshot & { ok: true }>(
+      await request("/api/update/check", { method: "POST" })
+    );
+  },
+
   async restart(): Promise<void> {
     try {
       const res = await request("/api/restart", { method: "POST" });

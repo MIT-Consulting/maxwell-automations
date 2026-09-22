@@ -17,7 +17,7 @@ import { api } from "./api";
 export type RestartDaemonButtonProps = {
   /**
    * `icon` — square icon trigger.
-   * `full` — labelled trigger (Settings → Application).
+   * `full` — labelled trigger (Settings → About).
    */
   variant?: "icon" | "full";
   className?: string;
@@ -27,7 +27,7 @@ export type RestartDaemonButtonProps = {
  * Self-contained remote-recovery control: confirms, asks the daemon to relaunch
  * itself, and leaves reconnection to the dashboard's WS loop. Lets a phone on
  * Tailscale kick a misbehaving daemon without shell access to the host. Lives
- * under Settings → Application. Calls `api.restart()` directly so it needs no
+ * under Settings → About. Calls `api.restart()` directly so it needs no
  * prop drilling.
  */
 export function RestartDaemonButton({

@@ -10,17 +10,21 @@ Public repos (lockstep tags):
 
 ## Pin to a tag
 
-Do not track `main`. Pin your fork to a release tag (`v1.0.0`, …) and upgrade
-deliberately with the changelog in hand.
+Do not track `main`. Pin your fork to a release tag. Latest tag is
+`v1.0.6` (2026-09-21). Upgrade deliberately with the changelog in hand.
 
 ```bash
 git clone https://github.com/MIT-Consulting/maxwell-automations.git
 cd maxwell-automations
-git checkout v1.0.1
+git checkout v1.0.6
 ```
 
 Skills bundle: same tag on `maxwell-automations-skills`. Breaking skill changes
 ride a major version with the daemon.
+
+`max update check` and Settings → About compare the running build with the
+approved release (`settings.update.repo`, default this public repo). They
+report the gap. Applying the upgrade stays the steps below.
 
 ## Upgrade
 

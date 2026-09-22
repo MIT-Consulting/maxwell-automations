@@ -482,12 +482,12 @@ a usable ntfy connection when `ntfy` is on for that event, and no
   changes or "clear" the machine for a verify script. That stops the daemon and
   the run is cancelled before a follow-up `lca up` can run (common when you're
   away on mobile). Rebuild, then run **`lca restart`** in one shot (or
-  **Settings → Application → Restart daemon**). `lca down` is operator teardown only.
+  **Settings → About → Restart daemon**). `lca down` is operator teardown only.
   `stop-lca-daemons.mjs` now refuses remote/active sessions unless
   `LCA_FORCE_STOP_DAEMONS=1`. After the daemon is back, a follow-up may briefly
   see `not found` while the SDK store settles; cold resume retries automatically
   before declaring the session stale.
-- **`Settings → Application → Restart daemon` from the phone leaves it down / "restart failed"** — the
+- **`Settings → About → Restart daemon` from the phone leaves it down / "restart failed"** — the
   daemon force-closes in-flight connections during teardown, so a phone's
   persistent `/ws` socket can't stall the relaunch. Before this, `server.close()`
   waited for the live dashboard socket to drain, `http.close()` hung, the

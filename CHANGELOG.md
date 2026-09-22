@@ -8,6 +8,15 @@ and version numbers follow [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.6] - 2026-09-21
+
+### Added
+
+- Report three versions: running (embedded at build), checkout (`version.json`), and the newest approved GitHub release.
+- `max --version`, `max version`, and `max update check`. `status` and `doctor` include the cached update line.
+- Settings → About shows those versions, links to the Apache-2.0 license and NOTICE, and restarts the daemon. A chip opens About when an approved update is available or a restart is required.
+- `settings.update` chooses the approved repo, cache interval, and optional token. The check does not install a release. Factory checkouts (`0.0.0-dev`) are not told to move to a public tag.
+
 ## [1.0.5] - 2026-09-16
 
 ### Fixed

@@ -255,6 +255,18 @@ export type DaemonSettings = {
    * config — never commit them.
    */
   notify?: NotifySettings;
+  /**
+   * Approved-release check (b68). Loaded once at startup. `token` is a secret
+   * and must stay in the home config — never commit it, never return it.
+   */
+  update?: {
+    check?: boolean;
+    repo?: string;
+    publicRepo?: string;
+    cacheHours?: number;
+    token?: string;
+    host?: string;
+  };
 };
 
 export type GlobalConfigYaml = {

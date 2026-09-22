@@ -16,6 +16,11 @@ import type {
   ModelSelection,
 } from "../model.js";
 import type { TriggerConfig } from "./triggers.js";
+import type {
+  ReleaseInfo,
+  UpdateState,
+  VersionIdentity,
+} from "../version.js";
 
 export type HealthResponse = {
   ok: true;
@@ -37,6 +42,17 @@ export type DaemonStatus = {
   mode: "dev" | "prod";
   startedAt: string;
   uptimeMs: number;
+  /** Build embedded at daemon compile time. */
+  running?: VersionIdentity;
+  /** `version.json` in the checkout. Null when the stamp is missing. */
+  checkout?: VersionIdentity | null;
+  /** Newest approved release, from the cache. */
+  available?: ReleaseInfo | null;
+  /** Public latest, only when `settings.update.publicRepo` differs from `repo`. */
+  publicAvailable?: ReleaseInfo | null;
+  updateState?: UpdateState;
+  lastCheckedAt?: string | null;
+  releaseUrl?: string | null;
 };
 
 export type ListAutomationsResponse = {

@@ -10,8 +10,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { AboutSettingsPanel } from "./AboutSettingsPanel";
 import { AlertsSettingsPanel } from "./AlertsSettingsPanel";
-import { ApplicationSettingsPanel } from "./ApplicationSettingsPanel";
 import { api } from "./api";
 import { workspaceLabel } from "./helpers";
 import { ModelSelect } from "./ModelSelect";
@@ -20,9 +20,12 @@ export type SettingsViewProps = {
   workspaces: Workspace[];
   activeWorkspaceId: string | null;
   isNarrow: boolean;
+  /** Increment to focus the About tab (update chip). */
+  aboutNonce?: number;
+  onUpdateChanged?: () => void;
 };
 
-type SettingsTab = "chat" | "alerts" | "application";
+type SettingsTab = "chat" | "alerts" | "about";
 
 type FormState = {
   modelSelection: ModelSelection | null;
@@ -72,8 +75,14 @@ export function SettingsView({
   workspaces,
   activeWorkspaceId,
   isNarrow,
+  aboutNonce = 0,
+  onUpdateChanged,
 }: SettingsViewProps): JSX.Element {
   const [activeTab, setActiveTab] = useState<SettingsTab>("chat");
+
+  useEffect(() => {
+    if (aboutNonce > 0) setActiveTab("about");
+  }, [aboutNonce]);
   const [form, setForm] = useState<FormState>({
     modelSelection: null,
     systemPrompt: "",
@@ -152,10 +161,10 @@ export function SettingsView({
 
   const chatTabId = "settings-tab-chat";
   const alertsTabId = "settings-tab-alerts";
-  const applicationTabId = "settings-tab-application";
+  const aboutTabId = "settings-tab-about";
   const chatPanelId = "settings-panel-chat";
   const alertsPanelId = "settings-panel-alerts";
-  const applicationPanelId = "settings-panel-application";
+  const aboutPanelId = "settings-panel-about";
 
   const tabButtonClass = (selected: boolean) =>
     cn(
@@ -201,14 +210,14 @@ export function SettingsView({
         </button>
         <button
           type="button"
-          id={applicationTabId}
+          id={aboutTabId}
           role="tab"
-          aria-selected={activeTab === "application"}
-          aria-controls={applicationPanelId}
-          className={tabButtonClass(activeTab === "application")}
-          onClick={() => setActiveTab("application")}
+          aria-selected={activeTab === "about"}
+          aria-controls={aboutPanelId}
+          className={tabButtonClass(activeTab === "about")}
+          onClick={() => setActiveTab("about")}
         >
-          Application
+          About
         </button>
       </div>
 
@@ -221,14 +230,14 @@ export function SettingsView({
         >
           <AlertsSettingsPanel isNarrow={isNarrow} />
         </div>
-      ) : activeTab === "application" ? (
+      ) : activeTab === "about" ? (
         <div
-          id={applicationPanelId}
+          id={aboutPanelId}
           role="tabpanel"
-          aria-labelledby={applicationTabId}
+          aria-labelledby={aboutTabId}
           className="flex min-h-0 flex-1 flex-col"
         >
-          <ApplicationSettingsPanel />
+          <AboutSettingsPanel onUpdateChanged={onUpdateChanged} />
         </div>
       ) : (
         <div

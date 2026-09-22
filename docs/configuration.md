@@ -16,6 +16,7 @@ variables. The daemon watches the YAML and reconciles on change; runtime
 | `<workspace>/.cursor/automations/*.yaml` | Per-workspace automation definitions. |
 | `~/.cursor-local-automations/.env` | Secrets — `CURSOR_API_KEY` (gitignored). |
 | `~/.cursor-local-automations/state.sqlite` | Runs, events, input requests, history. |
+| `~/.cursor-local-automations/update-cache.json` | Cached approved-release check (b68). Not SQLite. Safe to delete. |
 
 ## Global config (`automations.yaml`)
 
@@ -72,6 +73,12 @@ A configured workspace path that does not exist on disk logs a clear warning.
 | `pipelineAutoEscalateMaxPerPipeline` | `2` | `1` | `LCA_PIPELINE_AUTO_ESCALATE_MAX_PER_PIPELINE` | Max daemon-attributed auto-escalations per pipeline lineage (positive integer; values below `1` clamp to `1`). Operator escalations do not spend this budget. Restart required (`lca restart` after changing). |
 | `pipelineHaltDiscovery` | `true` | — | `LCA_PIPELINE_HALT_DISCOVERY` | When `true` (default), an unrecovered pipeline halt may spawn a best-effort halt-discovery advisory that parks a no-timeout recommendation card for the operator. Kill switch: `LCA_PIPELINE_HALT_DISCOVERY=0` (or `false`). Discovery has no escalation or pipeline-transition authority; the halted source and `lca escalate` remain authoritative. Restart required (`lca restart` after changing). |
 | `notify.ntfy` | _(unset / disabled)_ | — | — | Optional ntfy phone-notify **connection** (topic / server / token). Per-event delivery is under `notify.events` — see [Phone notify (ntfy)](#phone-notify-ntfy). No env override for topic/token. **`settings.notify` hot-reloads** (Settings → Alerts Save or YAML watcher); no restart for notify prefs/connection. |
+| `update.check` | `true` | — | `LCA_UPDATE_CHECK` | When `true`, the daemon may ask GitHub for the newest approved release. Factory checkouts (`0.0.0-dev`) stay `ahead/dev` and do not nag. `0` / `false` disables the check. Restart required. |
+| `update.repo` | `MIT-Consulting/maxwell-automations` | — | `LCA_UPDATE_REPO` | `owner/name` whose GitHub Releases are the **approved** upgrade target. Point this at the KLH fork when that fork is the pin. Restart required. |
+| `update.publicRepo` | _(unset)_ | — | `LCA_UPDATE_PUBLIC_REPO` | Optional second repo shown as informational public latest, only when it differs from `update.repo`. Restart required. |
+| `update.cacheHours` | `24` | `1` | `LCA_UPDATE_CACHE_HOURS` | How long a successful check is reused. Boot and `max update check` / Settings → About **Check now** can refresh sooner. Restart required for the interval. |
+| `update.token` | _(unset)_ | — | `LCA_UPDATE_TOKEN` | Optional token for a private approved repo. Never logged, never returned by the API. Restart required. |
+| `update.host` | `https://api.github.com` | — | `LCA_UPDATE_HOST` | GitHub API origin. A GitHub Enterprise base URL is allowed. Restart required. |
 
 `pipelineAutoEscalate`, `pipelineAutoEscalateMaxPerPipeline`,
 `pipelineHaltDiscovery`, and `pipelineResumeLookbackMs` load once at daemon
@@ -83,6 +90,12 @@ Precedence is **env var → YAML `settings:` → default**, then clamped to the
 minimum. An invalid `settings:` block (e.g. a typo'd key) is ignored with a
 warning and the daemon boots on defaults. A misconfigured laptop and a beefier
 desktop (Z240) can use different `maxConcurrentRuns` via the env override.
+
+`settings.update` feeds Settings → About, `max version`, `max status`, and
+`max update check`. It compares the running build, the checkout stamp, and the
+approved release. It does not download or apply anything. Upgrade steps stay in
+[Forking and upgrades](./forking.md). Factory checkouts stay `0.0.0-dev` and
+are not told to move to a public tag.
 
 ### Phone notify (ntfy)
 

@@ -5,6 +5,7 @@ import {
   type ChatSession,
   type ChatSnapshot,
   type DaemonStatus,
+  type UpdateSnapshot,
   type EnqueueFeatureRequest,
   type FeatureQueueEntry,
   type InputRequestMetadata,
@@ -211,6 +212,10 @@ export class DaemonClient {
 
   status(): Promise<DaemonStatus> {
     return this.request("/api/status");
+  }
+
+  checkUpdate(): Promise<UpdateSnapshot & { ok: true }> {
+    return this.postJson("/api/update/check");
   }
 
   async listAutomations(): Promise<Automation[]> {

@@ -1,4 +1,4 @@
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { timingSafeEqual } from "node:crypto";
 import {
   createServer,
@@ -63,6 +63,7 @@ import {
   type McpOverlay,
   type NotifySettingsPublic,
   type UpdateNotifySettingsInput,
+  type UpdateSnapshot,
   type WorkspaceChatDefaults,
 } from "@lca/shared";
 import { ChatEngine, ChatMessageError } from "../chats/engine.js";
@@ -224,6 +225,12 @@ export type HttpServerDeps = {
     getPublic: () => NotifySettingsPublic;
     patch: (body: UpdateNotifySettingsInput) => NotifySettingsPublic;
     testSend: () => Promise<{ ok: true } | { ok: false; error: string }>;
+  };
+  /** Approved-release cache (b68). Omitted in tests that don't exercise it. */
+  updates?: {
+    snapshot: () => UpdateSnapshot;
+    checkNow: () => Promise<UpdateSnapshot>;
+    checkoutRoot: () => string | null;
   };
 };
 
@@ -784,6 +791,7 @@ export function startHttpServer(deps: HttpServerDeps): Promise<HttpServer> {
   const allowedIps = deps.allowedIps ?? [];
   const controlToken = deps.controlToken;
   const log = deps.onLog ?? (() => {});
+  const updates = deps.updates;
   const startedAtMs = Date.now();
   const startedAt = new Date(startedAtMs).toISOString();
   const allowedOrigins = buildAllowedOrigins({ host, port, allowedIps });
@@ -793,6 +801,57 @@ export function startHttpServer(deps: HttpServerDeps): Promise<HttpServer> {
   // One-shot INFO when the first non-loopback source of the boot is seen, so an
   // operator can confirm a remote device actually reached the daemon.
   let loggedFirstRemote = false;
+
+  const statusPayload = () => {
+    const snap = updates?.snapshot();
+    return {
+      ok: true as const,
+      version: snap?.running.version ?? "0.0.0-dev",
+      pid: process.pid,
+      port,
+      host,
+      bindAddresses: bindHosts,
+      allowedIps,
+      remoteAuth: Boolean(controlToken),
+      mode: DEV_VITE_TARGET ? ("dev" as const) : ("prod" as const),
+      startedAt,
+      uptimeMs: Date.now() - startedAtMs,
+      ...(snap
+        ? {
+            running: snap.running,
+            checkout: snap.checkout,
+            available: snap.available,
+            publicAvailable: snap.publicAvailable,
+            updateState: snap.updateState,
+            lastCheckedAt: snap.lastCheckedAt,
+            releaseUrl: snap.releaseUrl,
+          }
+        : {}),
+    };
+  };
+
+  const sendLegal = (res: ServerResponse, name: "LICENSE" | "NOTICE"): void => {
+    const root = updates?.checkoutRoot() ?? null;
+    if (!root) {
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("not found");
+      return;
+    }
+    const file = join(root, name);
+    try {
+      const info = statSync(file);
+      if (!info.isFile() || info.size > 1_048_576) {
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("not found");
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end(readFileSync(file));
+    } catch {
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("not found");
+    }
+  };
 
   const requestListener = async (
     req: IncomingMessage,
@@ -864,24 +923,30 @@ export function startHttpServer(deps: HttpServerDeps): Promise<HttpServer> {
       const url = new URL(req.url ?? "/", `http://127.0.0.1:${port}`);
 
       if (method === "GET" && url.pathname === "/health") {
-        sendJson(res, 200, { ok: true, version: "0.0.0" });
+        sendJson(res, 200, {
+          ok: true,
+          version: statusPayload().version,
+        });
+        return;
+      }
+
+      if (method === "GET" && (url.pathname === "/LICENSE" || url.pathname === "/NOTICE")) {
+        sendLegal(res, url.pathname === "/LICENSE" ? "LICENSE" : "NOTICE");
         return;
       }
 
       if (method === "GET" && url.pathname === "/api/status") {
-        sendJson(res, 200, {
-          ok: true,
-          version: "0.0.0",
-          pid: process.pid,
-          port,
-          host,
-          bindAddresses: bindHosts,
-          allowedIps,
-          remoteAuth: Boolean(controlToken),
-          mode: DEV_VITE_TARGET ? "dev" : "prod",
-          startedAt,
-          uptimeMs: Date.now() - startedAtMs,
-        });
+        sendJson(res, 200, statusPayload());
+        return;
+      }
+
+      if (method === "POST" && url.pathname === "/api/update/check") {
+        if (!updates) {
+          sendJson(res, 404, { error: "not found" });
+          return;
+        }
+        const snap = await updates.checkNow();
+        sendJson(res, 200, { ok: true, ...snap });
         return;
       }
 

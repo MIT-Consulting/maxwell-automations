@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import {
+  ArrowUpCircle,
   Braces,
   ChevronLeft,
   ChevronUp,
@@ -10,6 +11,7 @@ import {
   ListFilter,
   MessageSquare,
   Plus,
+  RefreshCw,
   Rocket,
   Search,
   Settings,
@@ -65,6 +67,8 @@ export type ControlBarProps = {
   asSheet?: boolean;
   activeView?: "board" | "chat" | "files" | "settings";
   onSelectView?: (view: "board" | "chat" | "files" | "settings") => void;
+  /** Quiet chip for available / restart-required. Click opens Settings → About. */
+  updateChip?: { label: string; onOpen: () => void } | null;
 };
 
 export type WorkspacePickerProps = {
@@ -85,6 +89,40 @@ export type WorkspacePickerProps = {
 };
 
 const ALL_WORKSPACES_VALUE = "__all__";
+
+function UpdateChip({
+  label,
+  onOpen,
+  className,
+}: {
+  label: string;
+  onOpen: () => void;
+  className?: string;
+}): ReactNode {
+  const isRestart = label.includes("Restart");
+  return (
+    <Button
+      type="button"
+      variant="surface"
+      onClick={onOpen}
+      className={cn(
+        "group w-full justify-start gap-2 border text-xs font-medium cursor-pointer transition-all duration-150",
+        isRestart
+          ? "border-amber-500/40 bg-amber-500/10 text-amber-200 hover:border-amber-500 hover:bg-amber-500/20 hover:text-amber-100"
+          : "border-primary/40 bg-primary/10 text-blue-100 hover:border-primary/80 hover:bg-primary/20 hover:text-white",
+        className
+      )}
+      title={`${label} — open Settings → About`}
+    >
+      {isRestart ? (
+        <RefreshCw className="size-4 shrink-0 text-amber-400 group-hover:rotate-45 transition-transform duration-200" />
+      ) : (
+        <ArrowUpCircle className="size-4 shrink-0 text-primary group-hover:scale-110 transition-transform duration-200" />
+      )}
+      <span className="truncate">{label}</span>
+    </Button>
+  );
+}
 
 /** The single workspace context switcher — one dropdown, used identically in
  *  the desktop sidebar and the mobile top bar, on every view. Selecting a
@@ -224,6 +262,7 @@ type ControlBarControlsProps = Pick<
   | "onExport"
   | "activeView"
   | "onSelectView"
+  | "updateChip"
 >;
 
 /** Shared body (search + actions) for the desktop sidebar and the mobile
@@ -239,6 +278,7 @@ function ControlBarControls({
   onExport,
   activeView,
   onSelectView,
+  updateChip = null,
 }: ControlBarControlsProps) {
   const showBoardCluster = activeView === undefined || activeView === "board";
 
@@ -320,6 +360,9 @@ function ControlBarControls({
             <Settings />
             Settings
           </Button>
+        )}
+        {updateChip && (
+          <UpdateChip label={updateChip.label} onOpen={updateChip.onOpen} />
         )}
       </div>
     </>
@@ -452,6 +495,7 @@ export function ControlBar({
   asSheet = false,
   activeView,
   onSelectView,
+  updateChip = null,
 }: ControlBarProps) {
   const connLabel = connected ? "Daemon connected" : "Daemon offline";
   const showBoardCluster = activeView === undefined || activeView === "board";
@@ -466,6 +510,7 @@ export function ControlBar({
       onExport={onExport}
       activeView={activeView}
       onSelectView={onSelectView}
+      updateChip={updateChip}
     />
   );
 
@@ -586,6 +631,16 @@ export function ControlBar({
             </>
           )}
 
+          {updateChip && (
+            <RailButton label={updateChip.label} onClick={updateChip.onOpen}>
+              {updateChip.label.includes("Restart") ? (
+                <RefreshCw className="size-4 text-amber-400" />
+              ) : (
+                <ArrowUpCircle className="size-4 text-primary" />
+              )}
+            </RailButton>
+          )}
+
           {activeView && onSelectView && (
             <RailButton
               label="Settings view"
@@ -615,7 +670,7 @@ export function ControlBar({
           type="button"
           variant="ghost"
           size="icon-sm"
-          className="text-muted-foreground hover:text-foreground"
+          className="text-muted-foreground hover:text-foreground cursor-pointer"
           onClick={onToggleCollapse}
           title="Collapse control bar"
           aria-label="Collapse control bar"
