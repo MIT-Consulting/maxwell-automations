@@ -381,6 +381,10 @@ export class ChainRunner {
   private readonly haltDiscoveryInFlight = new Set<string>();
   /** Per-source advisory-spawn guard; distinct from the Phase 1 request guard. */
   private readonly haltDiscoveryAdvisoryInFlight = new Set<string>();
+  private readonly transitionInFlightCounts = new Map<string, number>();
+  private readonly transitionSettledListeners = new Set<
+    (runId: string, status: RunStatus) => void
+  >();
   private unsubscribe: (() => void) | null = null;
 
   constructor(options: ChainRunnerOptions) {
@@ -436,6 +440,19 @@ export class ChainRunner {
   stop(): void {
     this.unsubscribe?.();
     this.unsubscribe = null;
+  }
+
+  onTransitionSettled(
+    listener: (runId: string, status: RunStatus) => void
+  ): () => void {
+    this.transitionSettledListeners.add(listener);
+    return () => {
+      this.transitionSettledListeners.delete(listener);
+    };
+  }
+
+  hasTransitionInFlight(workspaceId: string): boolean {
+    return (this.transitionInFlightCounts.get(workspaceId) ?? 0) > 0;
   }
 
   /**
@@ -591,6 +608,9 @@ export class ChainRunner {
   private async tryRecoverPipelineHalt(
     runId: string
   ): Promise<HaltRecoveryResult> {
+    if (this.store.getRun(runId)?.trigger_kind === HALT_DISCOVERY_TRIGGER_KIND) {
+      return { kind: "already-resolved" as const, detail: "halt-discovery-advisory" };
+    }
     if (this.haltRecoveryInFlight.has(runId)) {
       this.onLog(
         `Pipeline halt recovery: skipped in-flight duplicate for run ${runId}`
@@ -767,11 +787,17 @@ export class ChainRunner {
     runId: string,
     status: RunStatus
   ): Promise<void> {
+    let inFlightWorkspaceId: string | null = null;
     try {
       const row = this.store.getRun(runId);
       if (!row) {
         return;
       }
+
+      inFlightWorkspaceId = row.workspace_id;
+      const prevCount =
+        this.transitionInFlightCounts.get(inFlightWorkspaceId) ?? 0;
+      this.transitionInFlightCounts.set(inFlightWorkspaceId, prevCount + 1);
 
       // Any advisory child bypasses wave/chain/b43. Only the authoritative
       // (oldest) child may reconcile failures or present a completed briefing.
@@ -1146,6 +1172,26 @@ export class ChainRunner {
     } catch (err) {
       const text = err instanceof Error ? err.message : String(err);
       this.onLog(`Chain runner error for run ${runId}: ${text}`);
+    } finally {
+      if (inFlightWorkspaceId) {
+        const count =
+          this.transitionInFlightCounts.get(inFlightWorkspaceId) ?? 0;
+        if (count <= 1) {
+          this.transitionInFlightCounts.delete(inFlightWorkspaceId);
+        } else {
+          this.transitionInFlightCounts.set(inFlightWorkspaceId, count - 1);
+        }
+      }
+      for (const listener of [...this.transitionSettledListeners]) {
+        try {
+          listener(runId, status);
+        } catch (err) {
+          const text = err instanceof Error ? err.message : String(err);
+          this.onLog(
+            `Chain runner settle listener error for run ${runId}: ${text}`
+          );
+        }
+      }
     }
   }
 

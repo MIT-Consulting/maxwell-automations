@@ -18,6 +18,8 @@ import {
   isPipelineGroupActive,
   layoutColumnRuns,
   pipelineGroupAggregateElapsed,
+  pipelineGroupExpandKey,
+  pipelineGroupExpanded,
   pipelineGroupStatus,
 } from "../packages/dashboard/src/pipelineGrouping.ts";
 
@@ -432,6 +434,42 @@ describe("pipeline group collapse helpers", () => {
     expect(formatPipelineGroupStatus("needs_input")).toBe("needs input");
   });
 
+  it("ignores halt-discovery advisories when settling a pipeline's status", () => {
+    const halted = run({ id: "review", status: "failed" });
+    const advisory = run({
+      id: "adv-1",
+      status: "failed",
+      parentRunId: "review",
+      triggerKind: "halt-discovery",
+    });
+    const advisoryOfAdvisory = run({
+      id: "adv-2",
+      status: "failed",
+      parentRunId: "adv-1",
+      triggerKind: "halt-discovery",
+    });
+    const retry = run({ id: "retry", status: "completed", parentRunId: "review" });
+    const gate = run({ id: "gate", status: "completed", parentRunId: "retry" });
+
+    // b71: retried to a green final-gate; stale failed advisories don't win.
+    expect(
+      pipelineGroupStatus([halted, advisory, advisoryOfAdvisory, retry, gate])
+    ).toBe("completed");
+
+    // A completed advisory does not hide a still-halted step.
+    expect(
+      pipelineGroupStatus([
+        halted,
+        { ...advisory, status: "completed" as const },
+      ])
+    ).toBe("failed");
+
+    // A parked briefing still surfaces as needs input.
+    expect(
+      pipelineGroupStatus([halted, { ...advisory, status: "needs_input" as const }])
+    ).toBe("needs_input");
+  });
+
   it("treats a group as active when any member is non-terminal", () => {
     expect(
       isPipelineGroupActive([
@@ -516,6 +554,30 @@ describe("pipeline group collapse helpers", () => {
     const layout = layoutColumnRuns(completedSlice);
     expect(defaultExpandedPipelineRootId(layout.groups, byRoot)).toBe("root");
     expect(defaultExpandedPipelineRootId(layout.groups)).toBe("root");
+  });
+
+  it("keeps an expand override inside the column that was clicked", () => {
+    const collapsedInCompleted = {
+      [pipelineGroupExpandKey("completed", "root")]: false,
+    };
+    expect(pipelineGroupExpandKey("completed", "root")).not.toBe(
+      pipelineGroupExpandKey("running", "root")
+    );
+    expect(
+      pipelineGroupExpanded(collapsedInCompleted, "completed", "root", "root")
+    ).toBe(false);
+    expect(
+      pipelineGroupExpanded(collapsedInCompleted, "running", "root", "root")
+    ).toBe(true);
+    expect(
+      pipelineGroupExpanded(
+        { [pipelineGroupExpandKey("failed", "older")]: true },
+        "failed",
+        "older",
+        "root"
+      )
+    ).toBe(true);
+    expect(pipelineGroupExpanded({}, "failed", "older", "root")).toBe(false);
   });
 
   it("aggregates wall-clock elapsed across the group", () => {

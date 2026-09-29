@@ -343,6 +343,8 @@ export const settingsSchema = z.strictObject({
   pipelineAutoEscalateMaxPerPipeline: z.number().int().positive().optional(),
   /** Post-unrecovered halt discovery advisory (b44). Default enabled in resolver. */
   pipelineHaltDiscovery: z.boolean().optional(),
+  /** Kickoff role-model probe. Default enabled in resolver. */
+  pipelineModelPreflight: z.boolean().optional(),
   maxAttachmentBytes: z.number().int().positive().optional(),
   maxAttachmentsPerMessage: z.number().int().positive().optional(),
   allowedAttachmentMimeTypes: z.array(z.string().min(1)).optional(),

@@ -10,6 +10,7 @@ import { writeNotifySettings } from "./config/write.js";
 import { startConfigWatcher } from "./config/watch.js";
 import { loadEnv, getApiKey } from "./env.js";
 import { createExecutor } from "./executor/index.js";
+import { ModelPreflight, createSdkModelProbe } from "./models/preflight.js";
 import { DaemonEventBus } from "./events.js";
 import { DashboardStore } from "./http/dashboard-store.js";
 import { startHttpServer } from "./http/server.js";
@@ -332,6 +333,14 @@ async function main(): Promise<void> {
     },
     inputHub,
     onLog: log,
+    ...(settings.pipelineModelPreflight
+      ? {
+          modelPreflight: new ModelPreflight({
+            probe: createSdkModelProbe({ apiKey }),
+            onLog: log,
+          }),
+        }
+      : {}),
   });
 
   await engine.resumeInterruptedRuns();
@@ -448,6 +457,7 @@ async function main(): Promise<void> {
     events,
     onLog: log,
     notifier,
+    settleSource: chainRunner,
     getWorkspaceLabel: (workspaceId) => {
       const path = runStore.getWorkspacePath(workspaceId);
       if (!path) {

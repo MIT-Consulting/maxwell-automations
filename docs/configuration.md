@@ -72,6 +72,7 @@ A configured workspace path that does not exist on disk logs a clear warning.
 | `pipelineAutoEscalate` | `true` | — | `LCA_PIPELINE_AUTO_ESCALATE` | When `true`, the daemon may auto-escalate a narrow allowlisted late `sdk_error` halt (see [troubleshooting](./troubleshooting.md) and [implement-fully protocol](./implement-fully-protocol.md)). Kill switch: `LCA_PIPELINE_AUTO_ESCALATE=0` (or `false`). Does not widen spawn/resume/stall retries or wave/track recovery. Restart required (`lca restart` after changing). |
 | `pipelineAutoEscalateMaxPerPipeline` | `2` | `1` | `LCA_PIPELINE_AUTO_ESCALATE_MAX_PER_PIPELINE` | Max daemon-attributed auto-escalations per pipeline lineage (positive integer; values below `1` clamp to `1`). Operator escalations do not spend this budget. Restart required (`lca restart` after changing). |
 | `pipelineHaltDiscovery` | `true` | — | `LCA_PIPELINE_HALT_DISCOVERY` | When `true` (default), an unrecovered pipeline halt may spawn a best-effort halt-discovery advisory that parks a no-timeout recommendation card for the operator. Kill switch: `LCA_PIPELINE_HALT_DISCOVERY=0` (or `false`). Discovery has no escalation or pipeline-transition authority; the halted source and `lca escalate` remain authoritative. Restart required (`lca restart` after changing). |
+| `pipelineModelPreflight` | `true` | — | `LCA_PIPELINE_MODEL_PREFLIGHT` | When `true` (default), a pipeline kickoff (CLI, dashboard, or feature queue) sends a one-line prompt to each distinct role model before the root run is created. If the backend rejects a selection, the kickoff is refused with the SDK's message and the roles that use it — nothing is enqueued. Cursor's catalog can list variants the local runtime rejects (seen with `grok-4.7` `context=500k`), which otherwise fail later as a zero-activity `sdk_error`. Passing selections are cached for 6 hours; failures are always re-probed. A probe with no result inside 60s is logged and allowed. Adds a few seconds to kickoff. Kill switch: `LCA_PIPELINE_MODEL_PREFLIGHT=0`. Restart required. |
 | `notify.ntfy` | _(unset / disabled)_ | — | — | Optional ntfy phone-notify **connection** (topic / server / token). Per-event delivery is under `notify.events` — see [Phone notify (ntfy)](#phone-notify-ntfy). No env override for topic/token. **`settings.notify` hot-reloads** (Settings → Alerts Save or YAML watcher); no restart for notify prefs/connection. |
 | `update.check` | `true` | — | `LCA_UPDATE_CHECK` | When `true`, the daemon may ask GitHub for the newest approved release. Factory checkouts (`0.0.0-dev`) stay `ahead/dev` and do not nag. `0` / `false` disables the check. Restart required. |
 | `update.repo` | `MIT-Consulting/maxwell-automations` | — | `LCA_UPDATE_REPO` | `owner/name` whose GitHub Releases are the **approved** upgrade target. Point this at the KLH fork when that fork is the pin. Restart required. |
@@ -81,7 +82,7 @@ A configured workspace path that does not exist on disk logs a clear warning.
 | `update.host` | `https://api.github.com` | — | `LCA_UPDATE_HOST` | GitHub API origin. A GitHub Enterprise base URL is allowed. Restart required. |
 
 `pipelineAutoEscalate`, `pipelineAutoEscalateMaxPerPipeline`,
-`pipelineHaltDiscovery`, and `pipelineResumeLookbackMs` load once at daemon
+`pipelineHaltDiscovery`, `pipelineModelPreflight`, and `pipelineResumeLookbackMs` load once at daemon
 startup (same as other `settings:` keys); changing them needs `lca restart`.
 Startup failed-halt recovery is a bounded, idempotent replay inside the
 lookback window — not a recurring sweep.
@@ -93,9 +94,10 @@ desktop (Z240) can use different `maxConcurrentRuns` via the env override.
 
 `settings.update` feeds Settings → About, `max version`, `max status`, and
 `max update check`. It compares the running build, the checkout stamp, and the
-approved release. It does not download or apply anything. Upgrade steps stay in
-[Forking and upgrades](./forking.md). Factory checkouts stay `0.0.0-dev` and
-are not told to move to a public tag.
+approved release. `max update --apply` is the only command that moves a checkout,
+and only when that checkout is a clean tag pin with no local commits and no
+active runs. Factory checkouts stay `0.0.0-dev` and are not told to move to a
+public tag. Details are in [Forking and upgrades](./forking.md).
 
 ### Phone notify (ntfy)
 
@@ -795,10 +797,17 @@ success does not settle the predecessor, and a false `failed` does not park
 `--after` rows.
 
 **Entry states:** `queued`, `running`, `done`, `failed`, `blocked`, `cancelled`.
-A row stays `running` while its pipeline lineage is incomplete and has not
-failed or been cancelled — including the gap after a green worker before the
-next spawn. A failure parks direct dependents one hop (`blocked`). The queue
-does not replay completed batches after daemon restart.
+The queue evaluates a finished step only after the chain runner has spawned its
+successor or retry, or decided there is none — direct `lca implement-fully`
+kickoffs included — so a queued entry never starts between two steps. A row
+stays `running` while its pipeline lineage is incomplete and has not failed or
+been cancelled — including the gap after a green worker before the next spawn. A
+failure parks direct dependents one hop (`blocked`). A `failed` entry later
+retried to a green `final-gate` flips to `done` (detail
+`recovered: final-gate completed after retry`); rows it parked return to
+`queued` in order and the next digest reports them. Cancelled rows and rows
+blocked by a cancelled dependency are never revived; the queue does not replay
+completed batches after daemon restart.
 
 **Staleness (AD3):** kickoff variables and role models are snapshotted on the row at
 enqueue time. Edits to global role recipes or planning settings **after** enqueue do
@@ -831,6 +840,7 @@ Bare `lca doctor` prints a one-line **Queue** summary when entries exist.
 | `LCA_PIPELINE_AUTO_ESCALATE` | Enable/disable safe post-terminal halt auto-escalation (`0`/`false` off, `1`/`true` on) — see `settings.pipelineAutoEscalate` above. |
 | `LCA_PIPELINE_AUTO_ESCALATE_MAX_PER_PIPELINE` | Positive integer cap on daemon auto-escalations per pipeline lineage — see `settings.pipelineAutoEscalateMaxPerPipeline` above. |
 | `LCA_PIPELINE_HALT_DISCOVERY` | Enable/disable best-effort halt-discovery advisories after unrecovered halts (`0`/`false` off, `1`/`true` on; default on) — see `settings.pipelineHaltDiscovery` above. Restart required. |
+| `LCA_PIPELINE_MODEL_PREFLIGHT` | Enable/disable the kickoff role-model probe (`0`/`false` off, `1`/`true` on; default on) — see `settings.pipelineModelPreflight` above. Restart required. |
 
 ## Auth (decided)
 

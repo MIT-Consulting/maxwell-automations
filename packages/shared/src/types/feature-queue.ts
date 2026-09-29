@@ -20,6 +20,8 @@ export type FeatureQueueEntry = {
   state: FeatureQueueEntryState;
   runId: string | null;
   detail: string | null;
+  featureSlug?: string | null;
+  summary?: string | null;
   createdAt: string;
   startedAt: string | null;
   settledAt: string | null;

@@ -154,6 +154,20 @@ function readFileUpdateSettings(): {
   }
 }
 
+export function loadCliUpdateSettings() {
+  return resolveUpdateSettings({
+    file: readFileUpdateSettings(),
+    env: {
+      check: envBool("LCA_UPDATE_CHECK"),
+      repo: process.env.LCA_UPDATE_REPO?.trim() || undefined,
+      publicRepo: process.env.LCA_UPDATE_PUBLIC_REPO?.trim() || undefined,
+      cacheHours: envNum("LCA_UPDATE_CACHE_HOURS"),
+      token: process.env.LCA_UPDATE_TOKEN?.trim() || undefined,
+      host: process.env.LCA_UPDATE_HOST?.trim() || undefined,
+    },
+  });
+}
+
 /** Refresh the shared cache when the daemon is down. */
 export async function checkUpdateLocally(
   moduleUrl?: string
@@ -161,17 +175,7 @@ export async function checkUpdateLocally(
   const identity = loadCliIdentity(moduleUrl);
   const cachePath = join(homedir(), ".cursor-local-automations", "update-cache.json");
   const checker = new UpdateChecker({
-    settings: resolveUpdateSettings({
-      file: readFileUpdateSettings(),
-      env: {
-        check: envBool("LCA_UPDATE_CHECK"),
-        repo: process.env.LCA_UPDATE_REPO?.trim() || undefined,
-        publicRepo: process.env.LCA_UPDATE_PUBLIC_REPO?.trim() || undefined,
-        cacheHours: envNum("LCA_UPDATE_CACHE_HOURS"),
-        token: process.env.LCA_UPDATE_TOKEN?.trim() || undefined,
-        host: process.env.LCA_UPDATE_HOST?.trim() || undefined,
-      },
-    }),
+    settings: loadCliUpdateSettings(),
     running: identity.running,
     checkout: identity.checkout,
     readCache: () => readText(cachePath),

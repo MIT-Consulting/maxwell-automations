@@ -890,6 +890,11 @@ export type ChatPromotedFromRunPayload = {
 export type RunEscalationRequest = {
   action: RunEscalationAction;
   reason?: string;
+  /**
+   * retry / skip only: replace these role selections in the lineage's
+   * `roleModels` for the new child and every later step.
+   */
+  roleModels?: Record<string, ModelSelection>;
 };
 
 /** Post-state after a successful escalation. */

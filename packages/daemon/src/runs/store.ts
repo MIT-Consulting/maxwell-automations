@@ -697,6 +697,7 @@ export class RunStore {
            AND chain_stop_requested_at IS NULL
            AND ended_at IS NOT NULL
            AND ended_at >= ?
+           AND (trigger_kind IS NULL OR trigger_kind != ?)
            AND NOT EXISTS (
              SELECT 1 FROM run_events e
              WHERE e.run_id = runs.id
@@ -705,7 +706,11 @@ export class RunStore {
          ORDER BY ended_at DESC, rowid DESC
          LIMIT ?`
       )
-      .all(cutoff, PIPELINE_RESUME_CANDIDATE_LIMIT) as RunRow[];
+      .all(
+        cutoff,
+        HALT_DISCOVERY_TRIGGER_KIND,
+        PIPELINE_RESUME_CANDIDATE_LIMIT
+      ) as RunRow[];
   }
 
   /**
@@ -733,6 +738,7 @@ export class RunStore {
            AND chain_stop_requested_at IS NULL
            AND ended_at IS NOT NULL
            AND ended_at >= ?
+           AND (trigger_kind IS NULL OR trigger_kind != ?)
            AND EXISTS (
              SELECT 1 FROM run_events e
              WHERE e.run_id = runs.id
@@ -750,7 +756,11 @@ export class RunStore {
          ORDER BY ended_at DESC, rowid DESC
          LIMIT ?`
       )
-      .all(cutoff, PIPELINE_RESUME_CANDIDATE_LIMIT) as RunRow[];
+      .all(
+        cutoff,
+        HALT_DISCOVERY_TRIGGER_KIND,
+        PIPELINE_RESUME_CANDIDATE_LIMIT
+      ) as RunRow[];
   }
 
   /**
@@ -788,6 +798,7 @@ export class RunStore {
          WHERE status = 'failed'
            AND ended_at IS NOT NULL
            AND ended_at >= ?
+           AND (trigger_kind IS NULL OR trigger_kind != ?)
            AND EXISTS (
              SELECT 1 FROM run_events e
              WHERE e.run_id = runs.id
@@ -807,6 +818,7 @@ export class RunStore {
       )
       .all(
         cutoff,
+        HALT_DISCOVERY_TRIGGER_KIND,
         HALT_DISCOVERY_TRIGGER_KIND,
         configKey,
         HALT_DISCOVERY_TRIGGER_KIND,

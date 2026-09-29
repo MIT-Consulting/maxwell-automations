@@ -8,6 +8,25 @@ and version numbers follow [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.7] - 2026-09-29
+
+### Added
+
+- `max update --apply` moves a clean tag-pinned checkout to a newer release tag, then builds and health-checks. A failed health check rolls back to `refs/max/update-backup`. Factory checkouts and dirty trees are refused. `--dry-run` prints the plan.
+- The Running column shows the next feature-queue entries before they become runs, with one Next mark per workspace.
+- Pipeline kickoff probes each role model and refuses up front when the runtime rejects a selection. `max escalate retry|skip --role` swaps that role for the retry and later steps.
+
+### Fixed
+
+- The feature queue waits until the chain transition settles before starting the next entry. A failed entry returns to done when a retry greens final-gate, and the rows it parked return to queued. Slot-waiting queued runs are labeled on the board.
+- Halt-discovery advisories are no longer treated as halted pipeline steps, and a failed advisory no longer marks the pipeline failed or completed.
+- Failed runs record the SDK error message instead of a bare `sdk_error`.
+- Expanding or collapsing an implement-fully group stays in the clicked column.
+
+### Changed
+
+- `@cursor/sdk` 1.0.32, so failed runs can carry the backend's error message. Node floor is 22.13+.
+
 ## [1.0.6] - 2026-09-21
 
 ### Added

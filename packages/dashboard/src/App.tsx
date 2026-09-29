@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 import {
   updateChipLabel,
+  visibleQueuePreviews,
   type Automation,
   type ChatSession,
   type Run,
@@ -35,7 +36,7 @@ import { cn } from "@/lib/utils";
 import { api, EscalationError, onAuthRequired } from "./api";
 import { AutomationModal } from "./AutomationModal";
 import { TokenGate } from "./TokenGate";
-import { AutomationCard, RunCard } from "./cards";
+import { AutomationCard, QueuePreviewCard, RunCard } from "./cards";
 import { MobileCreateFab } from "./MobileCreateFab";
 import { MobileFilterSheet } from "./MobileFilterSheet";
 import { OverlayScrollArea } from "./OverlayScrollArea";
@@ -97,6 +98,8 @@ import {
   indexRunsByPipelineRoot,
   layoutColumnRuns,
   pipelineGroupAggregateElapsed,
+  pipelineGroupExpandKey,
+  pipelineGroupExpanded,
   pipelineGroupStatus,
   waveOperatorActionGates,
   type PipelineGroup,
@@ -265,6 +268,7 @@ export function App() {
     automations,
     runs,
     workspaces,
+    featureQueueEntries,
     lastEventByRun,
     modelByRun,
     pendingInputByRun,
@@ -334,7 +338,10 @@ export function App() {
     );
   });
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
-  /** Explicit expand/collapse overrides; unset roots follow the default (current only). */
+  /**
+   * Explicit expand/collapse overrides, keyed by column and pipeline root.
+   * Unset keys follow that column's default (current group only).
+   */
   const [pipelineGroupExpandOverrides, setPipelineGroupExpandOverrides] =
     useState<Record<string, boolean>>({});
   const bootLocationWithoutWorkspaceApplied = useRef(false);
@@ -818,6 +825,25 @@ export function App() {
     return matchesFilters(r.workspaceId, name);
   });
 
+  const runningQueuePreview = useMemo(
+    () =>
+      visibleQueuePreviews({
+        entries: featureQueueEntries,
+        runs,
+        workspaceId: boardScopeAll ? null : activeWorkspaceId,
+        workspaceOrder: workspaces.map((w) => w.id),
+        search,
+      }),
+    [
+      featureQueueEntries,
+      runs,
+      boardScopeAll,
+      activeWorkspaceId,
+      workspaces,
+      search,
+    ]
+  );
+
   /** Whole-pipeline members by root — board columns only see a status slice. */
   const runsByPipelineRoot = useMemo(
     () => indexRunsByPipelineRoot(visibleRuns),
@@ -838,6 +864,11 @@ export function App() {
         const auto = automationById.get(r.automationId);
         return runCardTitle(r, auto?.name ?? r.automationId.slice(0, 8));
       });
+      if (key === "running") {
+        for (const item of runningQueuePreview) {
+          cardTitles.push(item.featureSlug ?? item.featureId);
+        }
+      }
       const { groups } = layoutColumnRuns(colRuns);
       const now = Date.now();
       const headerSegments = groups.map((group) => {
@@ -882,7 +913,13 @@ export function App() {
       });
       return { cardTitles, headerSegments };
     },
-    [automationById, runsByPipelineRoot, visibleAutomations, visibleRuns]
+    [
+      automationById,
+      runningQueuePreview,
+      runsByPipelineRoot,
+      visibleAutomations,
+      visibleRuns,
+    ]
   );
 
   const resetColumnLayout = useCallback((): void => {
@@ -978,6 +1015,7 @@ export function App() {
         pendingInputByRun,
         recentlyActiveFailed,
         runColumn,
+        runningPreviewCount: runningQueuePreview.length,
       }),
     [
       columnPrefs,
@@ -985,6 +1023,7 @@ export function App() {
       visibleRuns,
       pendingInputByRun,
       recentlyActiveFailed,
+      runningQueuePreview.length,
     ]
   );
 
@@ -1059,7 +1098,10 @@ export function App() {
 
   // Land the mobile board on the most relevant column the first time real data
   // arrives. Runs once so it never fights a tab the user has tapped/swiped to.
-  const hasLoadedData = automations.length > 0 || runs.length > 0;
+  const hasLoadedData =
+    automations.length > 0 ||
+    runs.length > 0 ||
+    featureQueueEntries.length > 0;
   useEffect(() => {
     if (didPickInitialColumnRef.current || !hasLoadedData) return;
     didPickInitialColumnRef.current = true;
@@ -1359,6 +1401,8 @@ export function App() {
 
   const renderPipelineGroup = (
     group: PipelineGroup,
+    columnKey: ColumnKey,
+    columnTitle: string,
     defaultExpandedRootId: string | null
   ): ReactNode => {
     const featureLabel =
@@ -1394,13 +1438,16 @@ export function App() {
       pipelineRuns,
       pipelineNow
     );
-    const expanded =
-      pipelineGroupExpandOverrides[group.rootRunId] ??
-      group.rootRunId === defaultExpandedRootId;
+    const expanded = pipelineGroupExpanded(
+      pipelineGroupExpandOverrides,
+      columnKey,
+      group.rootRunId,
+      defaultExpandedRootId
+    );
     const toggleExpanded = (): void => {
       setPipelineGroupExpandOverrides((prev) => ({
         ...prev,
-        [group.rootRunId]: !expanded,
+        [pipelineGroupExpandKey(columnKey, group.rootRunId)]: !expanded,
       }));
     };
     return (
@@ -1423,8 +1470,8 @@ export function App() {
             aria-expanded={expanded}
             aria-label={
               expanded
-                ? `Collapse ${featureLabel} pipeline`
-                : `Expand ${featureLabel} pipeline`
+                ? `Collapse ${featureLabel} pipeline in ${columnTitle}`
+                : `Expand ${featureLabel} pipeline in ${columnTitle}`
             }
             onClick={toggleExpanded}
           >
@@ -1543,6 +1590,8 @@ export function App() {
 
   const renderColumnBody = (colKey: ColumnKey): ReactNode => {
     const colRuns = runsForColumn(colKey);
+    const columnTitle =
+      COLUMNS.find((column) => column.key === colKey)?.title ?? colKey;
     const layout =
       colKey !== "backlog" && colKey !== "enabled"
         ? layoutColumnRuns(colRuns)
@@ -1596,11 +1645,32 @@ export function App() {
           {layout && (
             <>
               {layout.groups.map((group) =>
-                renderPipelineGroup(group, defaultExpandedRootId)
+                renderPipelineGroup(
+                  group,
+                  colKey,
+                  columnTitle,
+                  defaultExpandedRootId
+                )
               )}
               {layout.ungrouped.map(renderRunCard)}
             </>
           )}
+
+          {colKey === "running" && runningQueuePreview.length > 0 ? (
+            <>
+              <p className="m-0 pt-1 text-[11px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
+                Up next
+              </p>
+              {runningQueuePreview.map((item) => (
+                <QueuePreviewCard
+                  key={item.entryId}
+                  item={item}
+                  workspaceName={workspaceLabel(item.workspaceId, workspaces)}
+                  showWorkspace={boardScopeAll}
+                />
+              ))}
+            </>
+          ) : null}
         </div>
       </OverlayScrollArea>
     );
@@ -1776,7 +1846,8 @@ export function App() {
           />
         ) : search.trim() === "" &&
           visibleAutomations.length === 0 &&
-          visibleRuns.length === 0 ? (
+          visibleRuns.length === 0 &&
+          runningQueuePreview.length === 0 ? (
           <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 border border-border bg-card p-6 text-center">
             <p className="m-0 text-sm text-muted-foreground">
               Create something to see it on the board.

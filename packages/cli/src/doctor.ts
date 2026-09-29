@@ -1521,6 +1521,7 @@ export function summarizePipelineHealth(
     if (r.pipeline == null) continue;
     if (r.status !== "failed" && r.status !== "cancelled") continue;
     if (r.chainHandledAt != null) continue;
+    if (r.triggerKind === HALT_DISCOVERY_TRIGGER_KIND) continue;
     halted.push({ featureId: featureIdFromRun(r), runId: r.id });
   }
 

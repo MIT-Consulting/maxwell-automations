@@ -2,6 +2,7 @@ import {
   classifyFeatureQueueOutcome,
   featureQueueFailureDetail,
   findActivePipelineBlocker,
+  type RunStatus,
 } from "@lca/shared";
 import type { DaemonEventBus } from "../events.js";
 import {
@@ -11,11 +12,19 @@ import {
 import type { Notifier } from "../notify/notifier.js";
 import type { RunEngine } from "./engine.js";
 import {
+  dependencyBlockDetail,
   FeatureQueueStore,
   parseFeatureQueueKickoff,
   type FeatureQueueEntryRow,
 } from "./feature-queue-store.js";
-import type { RunStore } from "./store.js";
+import type { RunRow, RunStore } from "./store.js";
+
+export interface FeatureQueueSettleSource {
+  onTransitionSettled(
+    listener: (runId: string, status: RunStatus) => void
+  ): () => void;
+  hasTransitionInFlight(workspaceId: string): boolean;
+}
 
 export type FeatureQueueRunnerOptions = {
   store: RunStore;
@@ -25,6 +34,7 @@ export type FeatureQueueRunnerOptions = {
   onLog: (message: string) => void;
   notifier?: Pick<Notifier, "queueBatchComplete">;
   getWorkspaceLabel?: (workspaceId: string) => string;
+  settleSource?: FeatureQueueSettleSource;
 };
 
 export class FeatureQueueRunner {
@@ -35,7 +45,9 @@ export class FeatureQueueRunner {
   private readonly onLog: (message: string) => void;
   private readonly notifier?: Pick<Notifier, "queueBatchComplete">;
   private readonly getWorkspaceLabel: (workspaceId: string) => string;
-  private unsubscribe: (() => void) | null = null;
+  private readonly settleSource?: FeatureQueueSettleSource;
+  private unsubscribeEvents: (() => void) | null = null;
+  private unsubscribeSettle: (() => void) | null = null;
 
   constructor(options: FeatureQueueRunnerOptions) {
     this.store = options.store;
@@ -46,17 +58,22 @@ export class FeatureQueueRunner {
     this.notifier = options.notifier;
     this.getWorkspaceLabel =
       options.getWorkspaceLabel ?? ((workspaceId) => workspaceId);
+    this.settleSource = options.settleSource;
   }
 
   start(): void {
-    if (this.unsubscribe) {
+    if (this.unsubscribeEvents) {
       return;
     }
-    this.unsubscribe = this.events.subscribe((message) => {
+    this.unsubscribeEvents = this.events.subscribe((message) => {
       if (message.type !== "run_status") {
         return;
       }
-      if (
+      if (this.settleSource) {
+        if (message.status !== "cancelled") {
+          return;
+        }
+      } else if (
         message.status !== "completed" &&
         message.status !== "failed" &&
         message.status !== "cancelled"
@@ -64,17 +81,38 @@ export class FeatureQueueRunner {
         return;
       }
       queueMicrotask(() => {
-        void this.handleSettle(message.runId).catch((err) => {
+        void this.handleSettle(message.runId, message.status).catch((err) => {
           const text = err instanceof Error ? err.message : String(err);
-          this.onLog(`Feature queue runner error for run ${message.runId}: ${text}`);
+          this.onLog(
+            `Feature queue runner error for run ${message.runId}: ${text}`
+          );
         });
       });
     });
+    if (this.settleSource) {
+      this.unsubscribeSettle = this.settleSource.onTransitionSettled(
+        (runId, status) => {
+          if (status !== "completed" && status !== "failed") {
+            return;
+          }
+          queueMicrotask(() => {
+            void this.handleSettle(runId, status).catch((err) => {
+              const text = err instanceof Error ? err.message : String(err);
+              this.onLog(
+                `Feature queue runner error for run ${runId}: ${text}`
+              );
+            });
+          });
+        }
+      );
+    }
   }
 
   stop(): void {
-    this.unsubscribe?.();
-    this.unsubscribe = null;
+    this.unsubscribeEvents?.();
+    this.unsubscribeEvents = null;
+    this.unsubscribeSettle?.();
+    this.unsubscribeSettle = null;
   }
 
   async startNextIfIdle(workspaceId: string): Promise<void> {
@@ -98,13 +136,15 @@ export class FeatureQueueRunner {
     }
   }
 
-  private async handleSettle(runId: string): Promise<void> {
+  private async handleSettle(runId: string, status: RunStatus): Promise<void> {
     const run = this.store.getRun(runId);
     if (!run) {
       return;
     }
     const workspaceId = run.workspace_id;
-    if (!this.queueStore.hasQueueActivity(workspaceId)) {
+    const recovered =
+      status === "completed" && this.recoverFailedEntry(run);
+    if (!recovered && !this.queueStore.hasQueueActivity(workspaceId)) {
       return;
     }
     if (this.hasPipelineBlocker(workspaceId)) {
@@ -167,6 +207,9 @@ export class FeatureQueueRunner {
   }
 
   private hasPipelineBlocker(workspaceId: string): boolean {
+    if (this.settleSource?.hasTransitionInFlight(workspaceId)) {
+      return true;
+    }
     const runs = this.store.listActiveRunsForWorkspace(workspaceId);
     const pipelineAutomationIds = pipelineWorkerAutomationIds(workspaceId);
     return (
@@ -179,6 +222,37 @@ export class FeatureQueueRunner {
         pipelineAutomationIds
       ) != null
     );
+  }
+
+  private recoverFailedEntry(run: RunRow): boolean {
+    const root = run.chain_root_run_id ?? run.id;
+    const entry = this.queueStore.getEntryByRunId(root);
+    if (
+      !entry ||
+      entry.state !== "failed" ||
+      entry.workspace_id !== run.workspace_id
+    ) {
+      return false;
+    }
+    const lineage = this.store.listChainLineageRuns(root);
+    const outcome = classifyFeatureQueueOutcome(
+      lineage,
+      IMPLEMENT_FULLY_TERMINAL_CONFIG_KEY
+    );
+    if (outcome !== "done") {
+      return false;
+    }
+    if (!this.queueStore.recoverFailedEntry(entry.id)) {
+      return false;
+    }
+    const requeued = this.queueStore.requeueBlockedDependents(
+      entry.feature_id,
+      entry.workspace_id
+    );
+    this.onLog(
+      `Feature queue recovered ${entry.feature_id} (entry ${entry.id}) after retry; re-queued ${requeued.length > 0 ? requeued.join(", ") : "none"}`
+    );
+    return true;
   }
 
   private isEntryEligible(
@@ -209,7 +283,7 @@ export class FeatureQueueRunner {
       ) {
         this.queueStore.blockEntry(
           entry.id,
-          `blocked by ${dep.state} dependency ${depId}`
+          dependencyBlockDetail(dep.state, depId)
         );
         return false;
       }

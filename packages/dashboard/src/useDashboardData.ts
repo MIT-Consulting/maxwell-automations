@@ -8,6 +8,7 @@ import {
 import {
   legacyModelFromSelection,
   modelSelectionFromLifecyclePayload,
+  type FeatureQueueEntry,
   type InputRequest,
   type ModelSelection,
   type RunEvent,
@@ -19,6 +20,7 @@ export type DashboardData = {
   automations: Automation[];
   runs: Run[];
   workspaces: Workspace[];
+  featureQueueEntries: FeatureQueueEntry[];
   lastEventByRun: Record<string, string>;
   /** Selection recorded on `run.started` / `run.resumed` / `run.model` when present. */
   modelByRun: Record<string, ModelSelection>;
@@ -221,6 +223,9 @@ export function useDashboardData(): DashboardData {
   const [automations, setAutomations] = useState<Automation[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [featureQueueEntries, setFeatureQueueEntries] = useState<
+    FeatureQueueEntry[]
+  >([]);
   const [lastEventByRun, setLastEventByRun] = useState<Record<string, string>>({});
   const [modelByRun, setModelByRun] = useState<Record<string, ModelSelection>>(
     {}
@@ -244,6 +249,13 @@ export function useDashboardData(): DashboardData {
       setRuns(r);
       setWorkspaces(w);
       setError(null);
+
+      try {
+        const queue = await api.listFeatureQueue();
+        setFeatureQueueEntries(queue);
+      } catch {
+        /* keep previous queue snapshot on fetch failure */
+      }
 
       // Seed pending input from detail snapshots for needs_input runs so a
       // dashboard refresh restores the gate without relying on a prior WS frame.
@@ -478,6 +490,7 @@ export function useDashboardData(): DashboardData {
     automations,
     runs,
     workspaces,
+    featureQueueEntries,
     lastEventByRun,
     modelByRun,
     pendingInputByRun,

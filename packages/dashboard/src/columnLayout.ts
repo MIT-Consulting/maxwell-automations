@@ -328,6 +328,7 @@ export function buildColumnMeta(args: {
   pendingInputByRun: Record<string, unknown>;
   recentlyActiveFailed: boolean;
   runColumn: (status: Run["status"]) => ColumnKey;
+  runningPreviewCount?: number;
 }): Record<ColumnKey, ColumnMeta> {
   const {
     columnPrefs,
@@ -336,6 +337,7 @@ export function buildColumnMeta(args: {
     pendingInputByRun,
     recentlyActiveFailed,
     runColumn,
+    runningPreviewCount = 0,
   } = args;
 
   const backlogCount = visibleAutomations.filter((a) => !a.enabled).length;
@@ -360,7 +362,7 @@ export function buildColumnMeta(args: {
   const counts: Record<ColumnKey, number> = {
     backlog: backlogCount,
     enabled: enabledCount,
-    running: runningCount,
+    running: runningCount + runningPreviewCount,
     needs_input: needsInputRuns.length,
     completed: runsByColumn.get("completed")?.length ?? 0,
     failed: runsByColumn.get("failed")?.length ?? 0,

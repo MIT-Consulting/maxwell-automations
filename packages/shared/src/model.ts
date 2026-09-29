@@ -169,6 +169,36 @@ export function modelSelectionKey(selection: ModelSelection): string {
   return `${normalized.id}?${paramKey}`;
 }
 
+/**
+ * Parse the {@link modelSelectionKey} form (`id` or `id?k=v&k2=v2`) back into a
+ * normalized selection. Throws {@link ModelSelectionError} on malformed input.
+ */
+export function parseModelSelectionKey(spec: string): ModelSelection {
+  const trimmed = spec.trim();
+  const q = trimmed.indexOf("?");
+  const id = q === -1 ? trimmed : trimmed.slice(0, q);
+  const query = q === -1 ? "" : trimmed.slice(q + 1);
+  if (q !== -1 && !query) {
+    throw new ModelSelectionError(`model spec "${spec}" has an empty parameter list`);
+  }
+  const params: ModelParameterValue[] = [];
+  if (query) {
+    for (const pair of query.split("&")) {
+      const eq = pair.indexOf("=");
+      if (eq <= 0 || eq === pair.length - 1) {
+        throw new ModelSelectionError(
+          `model spec "${spec}": expected key=value, got "${pair}"`
+        );
+      }
+      params.push({
+        id: decodeURIComponent(pair.slice(0, eq)),
+        value: decodeURIComponent(pair.slice(eq + 1)),
+      });
+    }
+  }
+  return normalizeModelSelection({ id, ...(params.length ? { params } : {}) });
+}
+
 /** Concise chip/divider summary; id when params are absent. */
 export function modelSelectionSummary(
   selection: ModelSelection | null | undefined

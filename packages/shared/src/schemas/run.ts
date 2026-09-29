@@ -172,15 +172,33 @@ export const chainControlSchema = z
  * POST /api/runs/:id/escalate — operator retry / skip / abort on a halted
  * pipeline run. Optional reason shares the chain-control stop-reason bound.
  */
-export const runEscalationSchema = z.strictObject({
-  action: z.enum(RUN_ESCALATION_ACTIONS),
-  reason: z
-    .string()
-    .trim()
-    .min(1)
-    .max(CHAIN_STOP_REASON_MAX_LENGTH)
-    .optional(),
-});
+export const runEscalationSchema = z
+  .strictObject({
+    action: z.enum(RUN_ESCALATION_ACTIONS),
+    reason: z
+      .string()
+      .trim()
+      .min(1)
+      .max(CHAIN_STOP_REASON_MAX_LENGTH)
+      .optional(),
+    roleModels: chainRoleModelsSchema.optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.roleModels === undefined) return;
+    if (value.action === "abort") {
+      ctx.addIssue({
+        code: "custom",
+        message: "roleModels is only valid for retry or skip",
+        path: ["roleModels"],
+      });
+    } else if (Object.keys(value.roleModels).length === 0) {
+      ctx.addIssue({
+        code: "custom",
+        message: "roleModels must name at least one role",
+        path: ["roleModels"],
+      });
+    }
+  });
 
 export const pipelineWaveCandidateSchema = z
   .strictObject({

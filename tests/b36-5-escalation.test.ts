@@ -17,6 +17,7 @@ import { DashboardStore } from "../packages/daemon/src/http/dashboard-store.ts";
 import { startHttpServer } from "../packages/daemon/src/http/server.ts";
 import { InputHub } from "../packages/daemon/src/input/hub.ts";
 import { InputStore } from "../packages/daemon/src/input/store.ts";
+import { ModelPreflight } from "../packages/daemon/src/models/preflight.ts";
 import { ChainRunner } from "../packages/daemon/src/runs/chain-runner.ts";
 import { RunEngine } from "../packages/daemon/src/runs/engine.ts";
 import { RunStore } from "../packages/daemon/src/runs/store.ts";
@@ -259,7 +260,10 @@ type Harness = {
   port: number;
 };
 
-async function withHarness(run: (h: Harness) => Promise<void>): Promise<void> {
+async function withHarness(
+  run: (h: Harness) => Promise<void>,
+  opts?: { modelPreflight?: ModelPreflight }
+): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "lca-b36-5-esc-"));
   const workspace = join(root, "workspace");
   mkdirSync(workspace, { recursive: true });
@@ -281,6 +285,7 @@ async function withHarness(run: (h: Harness) => Promise<void>): Promise<void> {
     events,
     inputHub,
     maxConcurrentRuns: 4,
+    ...(opts?.modelPreflight ? { modelPreflight: opts.modelPreflight } : {}),
   });
   const chainRunner = new ChainRunner({
     store,
@@ -664,6 +669,85 @@ describe("b36-5 escalation", () => {
       expect(next.automation_id).toBe("ws::b");
       expect(next.chain_depth).toBe(3);
       expect(next.trigger_kind).toBe("chain");
+    });
+  });
+});
+
+describe("escalation role-model override", () => {
+  const REVIEWER_256K = {
+    id: "grok-4.7",
+    params: [
+      { id: "context", value: "256k" },
+      { id: "reasoning_effort", value: "xhigh" },
+    ],
+  };
+
+  it("retry swaps the role in the lineage context so later steps use it", async () => {
+    await withHarness(async (h) => {
+      seedFailedPipelineRun(h.store, h.db, { id: "failed-override", depth: 2 });
+      const response = await h.client.escalate("failed-override", {
+        action: "retry",
+        roleModels: { reviewer: REVIEWER_256K },
+      });
+
+      const child = readRun(h.db, response.childRunId!)!;
+      const childContext = JSON.parse(child.chain_context_json!) as ChainRunContext;
+      expect(childContext.roleModels.reviewer).toEqual(REVIEWER_256K);
+      expect(childContext.roleModels.implementer).toEqual({ id: "implementer-model" });
+      expect(child.model).toBe("implementer-model");
+
+      expect(escalatedEvents(h.db, "failed-override")[0]).toMatchObject({
+        action: "retry",
+        roleModelOverrides: { reviewer: REVIEWER_256K },
+      });
+
+      await until(() => listChildRuns(h.db, response.childRunId!).length === 1);
+      const reviewStep = readRun(h.db, listChildRuns(h.db, response.childRunId!)[0]!.id)!;
+      expect(reviewStep.automation_id).toBe("ws::b");
+      expect(reviewStep.model).toBe("grok-4.7");
+      expect(JSON.parse(reviewStep.model_params_json!)).toEqual(REVIEWER_256K.params);
+    });
+  });
+
+  it("refuses an override the model preflight rejects and leaves the run escalatable", async () => {
+    const preflight = new ModelPreflight({
+      probe: async (selection) =>
+        selection.id === "grok-4.7"
+          ? { ok: false, message: "Invalid parameters for registry model" }
+          : { ok: true },
+    });
+    await withHarness(
+      async (h) => {
+        seedFailedPipelineRun(h.store, h.db, { id: "failed-bad-override", depth: 2 });
+        await expect(
+          h.client.escalate("failed-bad-override", {
+            action: "retry",
+            roleModels: { reviewer: REVIEWER_256K },
+          })
+        ).rejects.toThrow(/model preflight failed.*reviewer.*registry model/);
+        expect(listChildRuns(h.db, "failed-bad-override")).toHaveLength(0);
+        expect(readRun(h.db, "failed-bad-override")!.chain_handled_at).toBeNull();
+
+        const plain = await h.client.escalate("failed-bad-override", { action: "retry" });
+        expect(plain.childRunId).toBeTruthy();
+      },
+      { modelPreflight: preflight }
+    );
+  });
+
+  it("rejects roleModels on abort", async () => {
+    await withHarness(async (h) => {
+      seedFailedPipelineRun(h.store, h.db, { id: "failed-abort-override", depth: 2 });
+      const res = await fetch(
+        `http://127.0.0.1:${h.port}/api/runs/failed-abort-override/escalate`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "abort", roleModels: { reviewer: REVIEWER_256K } }),
+        }
+      );
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toMatch(/retry or skip/);
     });
   });
 });

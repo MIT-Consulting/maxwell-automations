@@ -834,6 +834,7 @@ export class ChatEngine {
     this.store.appendEvent(chatId, "chat.finished", {
       sdkStatus: result.status,
       result: result.result ?? null,
+      ...(result.error?.message ? { error: result.error.message } : {}),
     });
     if (mapSdkResultStatus(result.status) !== "failed") {
       return { emptySdkError: false };

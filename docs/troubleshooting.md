@@ -224,7 +224,11 @@ for the same feature). In `lca doctor` health output, look for
     from the failed source.
   - **Operator remedy** (declined or any halt you choose to drive):
     - **retry** — same depth / prompt / context (after you fixed the underlying
-      failure). Unavailable on the root.
+      failure). Unavailable on the root. Add `--role <role>=<model>[?k=v&k2=v2]`
+      (repeatable, also on **skip**) to swap a role's model in the lineage's
+      `roleModels` for the new child and every later step — the override is
+      probed first (when `pipelineModelPreflight` is on) and recorded as
+      `roleModelOverrides` on `run.pipeline-escalated`.
     - **skip** — advance to the successor with an operator notice (when the budget
       and successor allow).
     - **abort** — end the lineage with a reason.
@@ -271,6 +275,20 @@ for the same feature). In `lca doctor` health output, look for
   malformed roadmap metadata, or a stale next-id marker. Fix the roadmap index
   (or pick a real feature id) and retry; do not invent slug/idea in the CLI or
   skill.
+- **Kickoff refuses: `model preflight failed`** — the backend rejected a role
+  model when the daemon probed it before creating the root run. The message
+  names the roles, the selection, and the SDK's reason (e.g. `Invalid parameters
+  for registry model`). The catalog can advertise variants the local runtime
+  rejects; pick another variant (for `grok-4.7`, `context=256k`) via `--role`,
+  `--role-profile`, or the dashboard, and kick off again. Nothing was enqueued.
+  Kill switch `LCA_PIPELINE_MODEL_PREFLIGHT=0` (restart required).
+- **Zero-activity `sdk_error` with a message** — `run.error` now carries the
+  SDK's `message` (and `sdkErrorCode` when present); `lca doctor <runId>` shows
+  it. A fast failure with no assistant/tool activity and a model/parameter
+  message is a rejected selection, not a flaky run — a plain retry reuses the
+  lineage's saved model and fails again. Retry with a different selection
+  instead of re-kicking off (which re-runs the architect step):
+  `lca escalate <runId> retry --role "reviewer=grok-4.7?context=256k&reasoning_effort=xhigh"`.
 - **Kickoff refuses: role has no override and no default** — every required role
   (`planner`, `implementer`, `reviewer`, `docs`) needs a model. Set
   `settings.pipelineRoleModels` (the synthetic `default` recipe) and/or add named
@@ -308,13 +326,17 @@ for the same feature). In `lca doctor` health output, look for
      `blocked` counts). Empty means no active batch.
   2. **`blocked` entries** — inspect `detail` on the row (`lca queue list` or
      `GET /api/feature-queue?workspaceId=…`). Dependents park one hop when an
-     upstream feature `failed`; clear or `rm` blocked rows before retrying.
+     upstream feature `failed`; retrying the failed feature to a green
+     `final-gate` re-queues rows it parked — `lca queue rm` a parked row first
+     if it must not run (e.g. already run by hand).
   3. **Active-pipeline guard** — if nothing starts but a non-queue implement-fully
      run is still `queued` / `running` / `needs_input`, the slot is occupied.
      Finish or cancel that run first (`lca queue add` intentionally skips this
      guard at enqueue time only).
   4. **`running` with no live worker** — expected between a green worker and the
-     next spawn, and until `final-gate`. Do not treat that as a failed feature.
+     next spawn, and until `final-gate`. A Running card badged **Waiting for
+     slot** is a `queued` run waiting for `maxConcurrentRuns`, usually the same
+     pipeline's next step. Do not treat that as a failed feature.
      `lca queue add --dry-run` validates without enqueueing.
 - **Parallel waves (implement-fully)** — start with bare `lca doctor`. Expect
   `tracks running`, `barrier wait`, `blocked waves`, and `cleanup required`. A

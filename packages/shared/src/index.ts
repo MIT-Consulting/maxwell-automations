@@ -11,6 +11,7 @@ export * from "./pipeline-wave.js";
 export * from "./pipeline-kickoff.js";
 export * from "./resolve-steer-target.js";
 export * from "./feature-queue.js";
+export * from "./feature-queue-preview.js";
 export * from "./prompt-references.js";
 export * from "./version.js";
 export * from "./schemas/config.js";

@@ -25,6 +25,7 @@ import type {
   InputRequest,
   ModelInfo,
   ModelSelection,
+  QueuePreviewItem,
   Run,
   RunEscalationAction,
 } from "@lca/shared";
@@ -60,6 +61,10 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import {
+  runCardStatusLabel,
+  SLOT_WAITING_LABEL,
+} from "./runStatusLabel";
 import { modelChipLabel, modelChipShortLabel } from "./modelControls";
 import { FilesDocLink } from "./FilesDocLink";
 import {
@@ -847,9 +852,14 @@ export function RunCard({
         >
           {displayTitle}
         </span>
+        {run.status === "queued" ? (
+          <Badge variant="outline" className="shrink-0 text-[10px]">
+            {SLOT_WAITING_LABEL}
+          </Badge>
+        ) : null}
         <StatusDot
           status={run.status}
-          title={run.status === "paused" ? "Paused" : run.status}
+          title={runCardStatusLabel(run.status)}
         />
       </div>
 
@@ -1070,6 +1080,94 @@ export function RunCard({
           onPromoteToChat={onPromoteToChat}
         />
       )}
+    </Card>
+  );
+}
+
+const PREVIEW_BADGE: Record<
+  QueuePreviewItem["readiness"],
+  string
+> = {
+  next: "Next",
+  waiting: "Queued",
+  blocked: "Blocked",
+  starting: "Starting",
+};
+
+const PREVIEW_BADGE_STYLE: Record<
+  QueuePreviewItem["readiness"],
+  string
+> = {
+  next: "border-primary/50 bg-primary/10 text-primary font-semibold",
+  starting:
+    "border-status-running/50 bg-status-running/10 text-status-running font-semibold animate-pulse",
+  blocked:
+    "border-status-failed/50 bg-status-failed/10 text-status-failed font-semibold",
+  waiting: "border-border bg-card/60 text-muted-foreground font-normal",
+};
+
+export function QueuePreviewCard({
+  item,
+  workspaceName,
+  showWorkspace,
+}: {
+  item: QueuePreviewItem;
+  workspaceName: string;
+  showWorkspace: boolean;
+}) {
+  const title = item.featureSlug ?? item.featureId;
+  const tooltipTitle = item.featureSlug
+    ? `${item.featureId} · ${item.featureSlug}`
+    : item.featureId;
+  return (
+    <Card
+      data-queue-preview={item.entryId}
+      className={cn(
+        CARD_BASE,
+        "border-dashed",
+        item.readiness === "next" && "border-primary/40 bg-primary/[0.02]",
+        item.readiness === "blocked" && "border-status-failed/35 bg-status-failed/[0.02]"
+      )}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="truncate font-semibold" title={tooltipTitle}>
+            {title}
+          </div>
+          {item.summary ? (
+            <div
+              className="truncate text-[11px] text-muted-foreground"
+              title={item.summary}
+            >
+              {item.summary}
+            </div>
+          ) : null}
+          {item.reason ? (
+            <div
+              className={cn(
+                "truncate text-[11px]",
+                item.readiness === "blocked"
+                  ? "font-medium text-status-failed"
+                  : "text-muted-foreground"
+              )}
+              title={item.reason}
+            >
+              {item.reason}
+            </div>
+          ) : null}
+        </div>
+        <Badge
+          variant="outline"
+          className={cn("shrink-0 text-[10px]", PREVIEW_BADGE_STYLE[item.readiness])}
+        >
+          {PREVIEW_BADGE[item.readiness]}
+        </Badge>
+      </div>
+      {showWorkspace ? (
+        <div className="mt-2">
+          <WorkspaceChip name={workspaceName} />
+        </div>
+      ) : null}
     </Card>
   );
 }

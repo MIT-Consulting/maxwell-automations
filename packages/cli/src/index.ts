@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
-import { execSync, spawn, spawnSync } from "node:child_process";
+import { execFileSync, execSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -16,7 +16,15 @@ import type {
   RunEscalationAction,
   WsServerMessage,
 } from "@lca/shared";
-import { RUN_ESCALATION_ACTIONS, formatUpdateSummary, type UpdateSnapshot } from "@lca/shared";
+import {
+  PIPELINE_MODEL_ROLES,
+  RUN_ESCALATION_ACTIONS,
+  formatUpdateSummary,
+  parseModelSelectionKey,
+  type ModelSelection,
+  type PipelineModelRole,
+  type UpdateSnapshot,
+} from "@lca/shared";
 import {
   DaemonClient,
   DaemonError,
@@ -87,7 +95,15 @@ import {
   formatUpdateCheckReport,
   formatVersionReport,
   loadCliIdentity,
+  loadCliUpdateSettings,
 } from "./version.js";
+import {
+  applyPlanLines,
+  assessUpdateApply,
+  executeUpdateApply,
+  normalizeReleaseTag,
+  releaseFetchUrl,
+} from "./update-apply.js";
 
 const LCA_HOME = join(homedir(), ".cursor-local-automations");
 const ENV_PATH = join(LCA_HOME, ".env");
@@ -858,34 +874,54 @@ async function cmdResume(
   console.log(`Resumed run ${runId.slice(0, 8)} (status: running).`);
 }
 
+const ESCALATE_USAGE =
+  "Usage: lca escalate <runId> retry|skip|abort [--reason <text>] [--role <role>=<model>[?k=v&k2=v2]]…";
+
 function parseEscalateArgs(args: string[]): {
   runQuery: string;
   action: RunEscalationAction;
   reason?: string;
+  roleModels?: Record<string, ModelSelection>;
 } {
   const positional: string[] = [];
   let reason: string | undefined;
+  const roleModels: Record<string, ModelSelection> = {};
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
     if (arg === "--reason") {
       const value = args[++i];
       if (!value || value.startsWith("-")) {
-        throw new DaemonError("Usage: lca escalate <runId> retry|skip|abort [--reason <text>]");
+        throw new DaemonError(ESCALATE_USAGE);
       }
       reason = value;
       continue;
     }
+    if (arg === "--role") {
+      const value = args[++i];
+      if (!value) throw new DaemonError(ESCALATE_USAGE);
+      const eq = value.indexOf("=");
+      const role = eq > 0 ? value.slice(0, eq) : "";
+      if (!PIPELINE_MODEL_ROLES.includes(role as PipelineModelRole)) {
+        throw new DaemonError(
+          `Invalid --role "${value}". Expected <role>=<model>[?k=v&k2=v2]; roles: ${PIPELINE_MODEL_ROLES.join(", ")}`
+        );
+      }
+      try {
+        roleModels[role] = parseModelSelectionKey(value.slice(eq + 1));
+      } catch (err) {
+        throw new DaemonError(
+          `Invalid --role "${value}": ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+      continue;
+    }
     if (arg.startsWith("-")) {
-      throw new DaemonError(
-        `Unknown flag "${arg}". Usage: lca escalate <runId> retry|skip|abort [--reason <text>]`
-      );
+      throw new DaemonError(`Unknown flag "${arg}". ${ESCALATE_USAGE}`);
     }
     positional.push(arg);
   }
   if (positional.length !== 2) {
-    throw new DaemonError(
-      "Usage: lca escalate <runId> retry|skip|abort [--reason <text>]"
-    );
+    throw new DaemonError(ESCALATE_USAGE);
   }
   const [runQuery, actionRaw] = positional;
   if (
@@ -895,10 +931,15 @@ function parseEscalateArgs(args: string[]): {
       `Invalid action "${actionRaw}". Valid: ${RUN_ESCALATION_ACTIONS.join(", ")}`
     );
   }
+  const hasRoles = Object.keys(roleModels).length > 0;
+  if (hasRoles && actionRaw === "abort") {
+    throw new DaemonError("--role is only valid with retry or skip");
+  }
   return {
     runQuery: runQuery!,
     action: actionRaw as RunEscalationAction,
     ...(reason !== undefined ? { reason } : {}),
+    ...(hasRoles ? { roleModels } : {}),
   };
 }
 
@@ -906,7 +947,7 @@ async function cmdEscalate(
   client: DaemonClient,
   args: string[]
 ): Promise<void> {
-  const { runQuery, action, reason } = parseEscalateArgs(args);
+  const { runQuery, action, reason, roleModels } = parseEscalateArgs(args);
   const target = await resolveDoctorTarget(client, runQuery);
   if (target.kind !== "run") {
     throw new DaemonError(
@@ -917,6 +958,7 @@ async function cmdEscalate(
   const response = await client.escalate(runId, {
     action,
     ...(reason !== undefined ? { reason } : {}),
+    ...(roleModels !== undefined ? { roleModels } : {}),
   });
   if (response.childRunId) {
     console.log(
@@ -1224,6 +1266,143 @@ async function cmdUpdateCheck(client: DaemonClient): Promise<void> {
     }
   }
   console.log(formatUpdateCheckReport(await checkUpdateLocally()));
+}
+
+async function cmdUpdateApply(client: DaemonClient, rawArgs: string[]): Promise<void> {
+  if (rawArgs.includes("check")) {
+    throw new DaemonError("Usage: max update check   |   max update --apply [--tag vX.Y.Z] [--dry-run]");
+  }
+  const dryRun = rawArgs.includes("--dry-run");
+  const tagFlag = rawArgs.indexOf("--tag");
+  const explicitTag = tagFlag >= 0 ? rawArgs[tagFlag + 1] : undefined;
+  if (tagFlag >= 0 && !explicitTag) {
+    throw new DaemonError("Usage: max update --apply --tag vX.Y.Z");
+  }
+
+  const identity = loadCliIdentity();
+  const root = identity.checkoutRoot;
+  if (!root) {
+    throw new DaemonError("No version.json checkout found next to this CLI.");
+  }
+  const settings = loadCliUpdateSettings();
+  let targetTag = explicitTag ? normalizeReleaseTag(explicitTag) : null;
+  if (explicitTag && !targetTag) {
+    throw new DaemonError(`Release tag must look like v1.2.3 (got ${explicitTag}).`);
+  }
+  if (!targetTag) {
+    const snapshot = await (async () => {
+      if (await daemonReachable(client)) {
+        try {
+          return await client.checkUpdate();
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (!message.startsWith("404")) throw err;
+        }
+      }
+      return checkUpdateLocally();
+    })();
+    targetTag = snapshot.available?.tag ?? null;
+    if (!targetTag) {
+      throw new DaemonError(
+        "No newer approved release to apply. Run max update check, or pass --tag vX.Y.Z."
+      );
+    }
+  }
+
+  const git = (args: string[]): string =>
+    execFileSync("git", ["-C", root, ...args], {
+      encoding: "utf8",
+      timeout: 120_000,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+
+  let pinnedTags: string[] = [];
+  let dirty = true;
+  try {
+    dirty = git(["status", "--porcelain"]).length > 0;
+    pinnedTags = git(["tag", "--points-at", "HEAD"])
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new DaemonError(`Cannot read git state in ${root}: ${message}`);
+  }
+
+  const live = await readLiveStatus(client);
+  let activeRuns = 0;
+  if (live) {
+    const runs = await client.listRuns(500);
+    activeRuns = runs.filter((run) => ACTIVE_RUN_STATUSES.includes(run.status)).length;
+  }
+
+  const decision = assessUpdateApply({
+    checkout: identity.checkout,
+    pinnedTags,
+    dirty,
+    activeRuns,
+    devMode: live?.mode === "dev",
+    targetTag,
+  });
+  if (!decision.ok) {
+    throw new DaemonError(decision.message);
+  }
+
+  const fetchUrl = releaseFetchUrl(settings.repo, settings.host);
+  if (!fetchUrl) {
+    throw new DaemonError(`Approved repo is not owner/name: ${settings.repo}`);
+  }
+
+  for (const line of applyPlanLines(settings.repo, decision.targetTag)) {
+    console.log(line);
+  }
+  if (dryRun) {
+    console.log("Not applied (--dry-run).");
+    return;
+  }
+
+  const wasRunning = await daemonReachable(client);
+  const npmBin = process.platform === "win32" ? "npm.cmd" : "npm";
+  await executeUpdateApply({
+    root,
+    repo: settings.repo,
+    fetchUrl,
+    targetTag: decision.targetTag,
+    targetVersion: decision.targetVersion,
+    token: settings.token,
+    wasRunning,
+    ops: {
+      git,
+      npm: (args) => {
+        const result = spawnSync(npmBin, args, {
+          cwd: root,
+          stdio: "inherit",
+          windowsHide: true,
+          timeout: 600_000,
+        });
+        if (result.error) throw result.error;
+        if (result.status !== 0) {
+          throw new Error(`npm ${args.join(" ")} exited ${result.status ?? "signal"}`);
+        }
+      },
+      stopDaemon: async () => {
+        if (await daemonReachable(client)) {
+          await cmdDownProd(client, { forRestart: true });
+        }
+      },
+      startDaemon: async () => {
+        await cmdUpProd(client);
+      },
+      healthVersion: async () => {
+        const up = await waitForDaemon(client, "up", 30_000);
+        if (!up) throw new Error("Daemon did not become healthy.");
+        const health = await client.health();
+        return health.version;
+      },
+      log: (line) => console.log(line),
+    },
+  });
 }
 
 async function cmdStatus(client: DaemonClient): Promise<void> {
@@ -1825,6 +2004,8 @@ Usage:
   max --version                  Print the CLI build version
   max version                    Running, checkout, and update state
   max update check               Refresh the approved-release check
+  max update --apply [--tag vX.Y.Z] [--dry-run]
+                                 Move a clean tag pin to that release
   max logs --daemon [-f]         Tail daemon or dev rig log (-f to follow)
   max list [--workspace, -w <id|name|path>]
                                  Show automations and recent run states
@@ -1838,6 +2019,9 @@ Usage:
   max pause <runId>              Park a running automation for steering chat
   max resume <runId> [note…]     Resume a paused run (optional operator note)
   max escalate <runId> <action>  Retry/skip/abort a halted pipeline run (needs daemon)
+                                 --role <role>=<model>[?k=v&k2=v2] (retry/skip) swaps that
+                                 role's model for this and later steps, e.g.
+                                 --role "reviewer=grok-4.7?context=256k&reasoning_effort=xhigh"
   max wave <waveId> <action>     Retry integration or abort a blocked wave (needs daemon)
   max message <runId> [text…]    Queue while running, or follow-up after terminal
   max interrupt <runId> [text…]  Stop current stream and send message immediately
@@ -1924,8 +2108,14 @@ async function main(): Promise<void> {
       await cmdVersion(client);
       return;
     case "update":
+      if (rest.includes("--apply")) {
+        await cmdUpdateApply(client, rest);
+        return;
+      }
       if (rest[0] !== "check") {
-        throw new DaemonError("Usage: max update check");
+        throw new DaemonError(
+          "Usage: max update check   |   max update --apply [--tag vX.Y.Z] [--dry-run]"
+        );
       }
       await cmdUpdateCheck(client);
       return;

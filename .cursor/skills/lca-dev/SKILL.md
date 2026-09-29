@@ -48,7 +48,9 @@ already surfaces it.
 
 Bare `lca doctor` prints daemon health, active/halted pipelines, and recent
 failures with 8-char ids — enough to resolve a vague reference in one round trip.
-Escalate only after that: `lca escalate <id> retry|skip|abort`. Deeper layout:
+Escalate only after that: `lca escalate <id> retry|skip|abort`. When the halt is a
+rejected model (fast `sdk_error`, no activity, a model/parameter message), retry with
+`--role <role>=<model>[?k=v&k2=v2]` instead of a fresh kickoff. Deeper layout:
 [`docs/troubleshooting.md`](../../docs/troubleshooting.md).
 
 **Queue `--after`:** deps must already be **queue rows** (or prior `done`

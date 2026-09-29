@@ -16,6 +16,7 @@ import {
   HALT_DISCOVERY_WORKERS,
 } from "../packages/daemon/src/pipelines/halt-discovery.ts";
 import { reconcileHaltDiscoveryAdvisoryTerminal } from "../packages/daemon/src/runs/halt-discovery-orchestrator.ts";
+import { requestPipelineHaltDiscovery } from "../packages/daemon/src/runs/halt-discovery-trigger.ts";
 import { RunStore } from "../packages/daemon/src/runs/store.ts";
 
 type Db = ReturnType<typeof openDatabase>;
@@ -794,6 +795,45 @@ describe("reconcileHaltDiscoveryAdvisoryTerminal", () => {
         code: "advisory-failed",
         advisoryRunId: "adv-bound",
       });
+    } finally {
+      destroyEnv(env);
+    }
+  });
+});
+
+describe("failed advisories are never halt sources", () => {
+  it("excludes halt-discovery runs from every startup candidate query and the trigger", () => {
+    const env = createEnv();
+    try {
+      seedFailedHalt(env.store, env.db, { id: "halt-src" });
+      seedAdvisoryChild(env, {
+        sourceId: "halt-src",
+        childId: "adv-failed",
+        status: "failed",
+      });
+      env.db
+        .prepare(`UPDATE runs SET ended_at = datetime('now') WHERE id = 'adv-failed'`)
+        .run();
+
+      expect(
+        env.store.listPipelineHaltRecoveryCandidates(LOOKBACK_MS).map((r) => r.id)
+      ).toEqual(["halt-src"]);
+
+      appendRequested(env.store, "adv-failed");
+      expect(
+        env.store.listPipelineHaltDiscoveryCandidates(LOOKBACK_MS).map((r) => r.id)
+      ).not.toContain("adv-failed");
+      expect(
+        env.store
+          .listUnresolvedHaltDiscoveryAdvisoryCandidates(LOOKBACK_MS)
+          .map((r) => r.id)
+      ).not.toContain("adv-failed");
+
+      const before = env.store.listRunEvents("adv-failed").length;
+      expect(
+        requestPipelineHaltDiscovery(env.store, "adv-failed", true, () => {})
+      ).toEqual({ kind: "already-recorded" });
+      expect(env.store.listRunEvents("adv-failed")).toHaveLength(before);
     } finally {
       destroyEnv(env);
     }

@@ -80,6 +80,11 @@ import type { InputHub } from "../input/hub.js";
 import { rowToInputRequest } from "../input/store.js";
 import { buildRevivePrimer } from "../handoff/continuePrompt.js";
 import { synthesizeTranscript } from "../handoff/transcript.js";
+import {
+  formatModelPreflightFailures,
+  type ModelPreflight,
+  type ModelPreflightFailure,
+} from "../models/preflight.js";
 import { resolveModelSelection } from "../models/resolve.js";
 import { selectionFromStored } from "../models/selection-persist.js";
 import type { DaemonEventSink } from "../events.js";
@@ -204,6 +209,8 @@ export type RunEngineOptions = {
   sessionRevive?: boolean;
   /** Internal test seam for cold-resume retry policy. */
   resumeRetryPolicy?: Partial<ResumeRetryPolicy>;
+  /** Probes pipeline role models before a context root is created; omitted = skip. */
+  modelPreflight?: ModelPreflight;
 };
 
 export type RunFailureReason =
@@ -695,6 +702,17 @@ export class RunEngine {
     }
 
     const isContextRoot = Boolean(chainContext) && !parentRunId;
+
+    const preflight = this.options.modelPreflight;
+    if (isContextRoot && preflight && chainContext) {
+      const failures = await preflight.check(chainContext.roleModels ?? {});
+      if (failures.length > 0) {
+        const message = formatModelPreflightFailures(failures);
+        this.log(`Kickoff refused for automation ${automationId}: ${message}`);
+        throw new TriggerRunValidationError(message);
+      }
+    }
+
     const chainRootRunId = isContextRoot
       ? runId
       : (options?.chainRootRunId ?? null);
@@ -1873,6 +1891,14 @@ export class RunEngine {
    * Operator or daemon escalation (retry / skip / abort). Not gated by run token.
    * Optional call context is runtime-only (defaults to operator).
    */
+  /** Probe role models with the kickoff preflight; `[]` when preflight is off. */
+  async preflightRoleModels(
+    roleModels: Partial<Record<string, ModelSelection>>
+  ): Promise<ModelPreflightFailure[]> {
+    const preflight = this.options.modelPreflight;
+    return preflight ? preflight.check(roleModels) : [];
+  }
+
   escalateRun(
     runId: string,
     request: RunEscalationRequest,
@@ -3214,14 +3240,20 @@ export class RunEngine {
         .listRunEvents(runId)
         .some((e) => e.event_type === "run.error");
       if (!alreadyHasError) {
+        const sdkErrorMessage = result.error?.message?.trim() || undefined;
         const sdkMessage =
-          typeof result.result === "string" && result.result.trim().length > 0
+          sdkErrorMessage ??
+          (typeof result.result === "string" && result.result.trim().length > 0
             ? result.result
-            : undefined;
+            : undefined);
+        if (sdkErrorMessage !== undefined) {
+          this.log(`Run ${runId}: sdk error — ${sdkErrorMessage}`);
+        }
         this.store.appendEvent(runId, "run.error", {
           reason: "sdk_error",
           sdkStatus: result.status,
           ...(sdkMessage !== undefined ? { message: sdkMessage } : {}),
+          ...(result.error?.code ? { sdkErrorCode: result.error.code } : {}),
         });
         try {
           this.options.onRunFailed?.(runId, "sdk_error");

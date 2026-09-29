@@ -11,6 +11,7 @@ import {
   type PipelineHaltDiscoverySkippedPayload,
   type PipelineHaltRecoveryDeclineCode,
 } from "@lca/shared";
+import { HALT_DISCOVERY_TRIGGER_KIND } from "../pipelines/halt-discovery.js";
 import type { RunRow, RunStore } from "./store.js";
 
 export type HaltDiscoveryTriggerResult =
@@ -133,7 +134,7 @@ export function requestPipelineHaltDiscovery(
   onLog: (message: string) => void
 ): HaltDiscoveryTriggerResult {
   const run = store.getRun(sourceRunId);
-  if (!run) {
+  if (!run || run.trigger_kind === HALT_DISCOVERY_TRIGGER_KIND) {
     return { kind: "already-recorded" };
   }
 

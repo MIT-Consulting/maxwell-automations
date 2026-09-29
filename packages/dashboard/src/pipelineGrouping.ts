@@ -56,24 +56,40 @@ export function isPipelineGroupActive(runs: readonly Run[]): boolean {
   return runs.some((r) => !TERMINAL_STATUSES.has(r.status));
 }
 
+const HALT_DISCOVERY_TRIGGER_KIND = "halt-discovery";
+
+function isHaltDiscoveryAdvisory(run: Run): boolean {
+  return run.triggerKind === HALT_DISCOVERY_TRIGGER_KIND;
+}
+
 /**
- * Frontier of a pipeline's run tree: runs that are not themselves the
- * `parentRunId` of another run in the group. A failed step that was
+ * Frontier of a pipeline's run tree: step runs that are not themselves the
+ * `parentRunId` of another step in the group. A failed step that was
  * retried (or skipped) is superseded by its child and drops out here, so a
- * stale `failed` row doesn't outlive the retry that resolved it. Falls back
- * to all runs if nothing qualifies (should not happen outside malformed
- * data).
+ * stale `failed` row doesn't outlive the retry that resolved it.
+ *
+ * Halt-discovery advisories hang off a halted step but are not pipeline
+ * steps: they never supersede their source, and a terminal advisory never
+ * sets the pipeline's state. A still-active advisory (running or parked on
+ * its briefing) stays in the frontier because it needs the operator.
+ * Falls back to all runs if nothing qualifies (malformed data only).
  */
 export function effectivePipelineGroupRuns(
   runs: readonly Run[]
 ): readonly Run[] {
   if (runs.length === 0) return runs;
+  const steps = runs.filter((r) => !isHaltDiscoveryAdvisory(r));
   const parentIds = new Set<string>();
-  for (const run of runs) {
+  for (const run of steps) {
     if (run.parentRunId) parentIds.add(run.parentRunId);
   }
-  const leaves = runs.filter((r) => !parentIds.has(r.id));
-  return leaves.length > 0 ? leaves : runs;
+  const frontier = [
+    ...steps.filter((r) => !parentIds.has(r.id)),
+    ...runs.filter(
+      (r) => isHaltDiscoveryAdvisory(r) && !TERMINAL_STATUSES.has(r.status)
+    ),
+  ];
+  return frontier.length > 0 ? frontier : runs;
 }
 
 /**
@@ -137,6 +153,30 @@ export function indexRunsByPipelineRoot(
 }
 
 /**
+ * Expand/collapse overrides are per column. The same pipeline root is rendered
+ * in every column that holds one of its steps, and a click in one column must
+ * not change the others.
+ */
+export function pipelineGroupExpandKey(
+  columnKey: string,
+  rootRunId: string
+): string {
+  return `${columnKey}:${rootRunId}`;
+}
+
+/** Explicit override for this column, otherwise the column's default root. */
+export function pipelineGroupExpanded(
+  overrides: Readonly<Record<string, boolean>>,
+  columnKey: string,
+  rootRunId: string,
+  defaultExpandedRootId: string | null
+): boolean {
+  const override = overrides[pipelineGroupExpandKey(columnKey, rootRunId)];
+  if (override !== undefined) return override;
+  return rootRunId === defaultExpandedRootId;
+}
+
+/**
  * Default expanded root: newest active **pipeline** (using whole-root members
  * when provided), else newest group overall. Groups are assumed newest-first.
  */
@@ -157,6 +197,8 @@ export function formatPipelineGroupStatus(status: RunStatus): string {
       return "needs input";
     case "paused":
       return "paused";
+    case "queued":
+      return "waiting for slot";
     default:
       return status;
   }

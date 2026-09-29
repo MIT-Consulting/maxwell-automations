@@ -1,11 +1,16 @@
 import {
+  modelSelectionSummary,
+  normalizeModelSelection,
   workerKeyFromConfigKey,
+  type ChainRunContext,
+  type ModelSelection,
   type PipelineHaltRecoveryDecision,
   type RunEscalationAction,
   type RunEscalationRefusal,
   type RunEscalationRequest,
   type RunEscalationResponse,
 } from "@lca/shared";
+import { formatModelPreflightFailures } from "../models/preflight.js";
 import type { RunEngine } from "./engine.js";
 import {
   buildChainedPromptOverride,
@@ -90,6 +95,18 @@ ${detail}`;
 ${detail}`;
 }
 
+function normalizeRoleOverrides(
+  roleModels: Record<string, ModelSelection> | undefined
+): Record<string, ModelSelection> | undefined {
+  if (!roleModels || Object.keys(roleModels).length === 0) return undefined;
+  return Object.fromEntries(
+    Object.entries(roleModels).map(([role, sel]) => [
+      role,
+      normalizeModelSelection(sel),
+    ])
+  );
+}
+
 function resolveActor(callContext?: EscalationCallContext): EscalationActor {
   return callContext?.actor ?? "operator";
 }
@@ -101,7 +118,8 @@ function escalatePayload(
   childRunId: string | null,
   recoveryDecision:
     | Extract<PipelineHaltRecoveryDecision, { action: "retry" | "skip" }>
-    | undefined
+    | undefined,
+  roleOverrides?: Record<string, ModelSelection>
 ): Record<string, unknown> {
   const payload: Record<string, unknown> = {
     action,
@@ -109,6 +127,9 @@ function escalatePayload(
     reason: reason ?? null,
     childRunId,
   };
+  if (roleOverrides) {
+    payload.roleModelOverrides = roleOverrides;
+  }
   if (
     actor === "daemon" &&
     recoveryDecision &&
@@ -198,6 +219,26 @@ export async function escalateRun(
     }
   }
 
+  let childContext: ChainRunContext = context;
+  const roleOverrides = normalizeRoleOverrides(request.roleModels);
+  if (roleOverrides && action !== "abort") {
+    const failures = await engine.preflightRoleModels(roleOverrides);
+    if (failures.length > 0) {
+      throw new Error(formatModelPreflightFailures(failures));
+    }
+    childContext = {
+      ...context,
+      roleModels: { ...context.roleModels, ...roleOverrides },
+    };
+    onLog(
+      `Escalation ${action} for run ${runId}: role override ${Object.entries(
+        roleOverrides
+      )
+        .map(([role, sel]) => `${role}=${modelSelectionSummary(sel)}`)
+        .join(", ")}`
+    );
+  }
+
   if (action === "abort") {
     if (!store.claimChainHandled(runId)) {
       const after = store.getRun(runId);
@@ -277,7 +318,7 @@ export async function escalateRun(
     }
     const { modelSelectionOverride } = resolveChildModelRole(
       true,
-      context,
+      childContext,
       automation,
       onLog
     );
@@ -285,7 +326,7 @@ export async function escalateRun(
     const triggerOptions = {
       parentRunId: runId,
       promptOverride: row.prompt!,
-      chainContext: context,
+      chainContext: childContext,
       chainRootRunId: row.chain_root_run_id!,
       chainDepth: row.chain_depth!,
       chainMaxDepth: effectiveMaxDepth,
@@ -322,7 +363,8 @@ export async function escalateRun(
         actor,
         request.reason,
         childRunId,
-        recoveryDecision
+        recoveryDecision,
+        roleOverrides
       )
     );
     onLog(`Escalation retry ${runId} → run ${childRunId}`);
@@ -372,7 +414,7 @@ export async function escalateRun(
     sourceAutomation.name,
     target,
     false,
-    context,
+    childContext,
     onLog
   );
 
@@ -404,7 +446,7 @@ export async function escalateRun(
 
   const { modelSelectionOverride } = resolveChildModelRole(
     true,
-    context,
+    childContext,
     target,
     onLog
   );
@@ -412,7 +454,7 @@ export async function escalateRun(
   const triggerOptions = {
     parentRunId: runId,
     promptOverride,
-    chainContext: context,
+    chainContext: childContext,
     chainRootRunId: row.chain_root_run_id!,
     chainDepth: row.chain_depth! + 1,
     chainMaxDepth: effectiveMaxDepth,
@@ -444,7 +486,14 @@ export async function escalateRun(
   store.appendEvent(
     runId,
     "run.pipeline-escalated",
-    escalatePayload("skip", actor, request.reason, childRunId, recoveryDecision)
+    escalatePayload(
+      "skip",
+      actor,
+      request.reason,
+      childRunId,
+      recoveryDecision,
+      roleOverrides
+    )
   );
   onLog(`Escalation skip ${runId} → run ${childRunId} (${chainNext})`);
   return {

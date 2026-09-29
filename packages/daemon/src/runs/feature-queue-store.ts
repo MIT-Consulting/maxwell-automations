@@ -1,6 +1,7 @@
-import type {
-  FeatureQueueEntry,
-  TriggerRunRequest,
+import {
+  readQueuePreviewFields,
+  type FeatureQueueEntry,
+  type TriggerRunRequest,
 } from "@lca/shared";
 import { randomUUID } from "node:crypto";
 import type { LcaDatabase } from "../db/index.js";
@@ -44,6 +45,20 @@ export class FeatureQueueError extends Error {
 
 const ACTIVE_DUPLICATE_STATES = ["queued", "running", "blocked"] as const;
 
+export function failedFeatureBlockDetail(featureId: string): string {
+  return `blocked by failed feature ${featureId}`;
+}
+
+export function dependencyBlockDetail(
+  state: string,
+  featureId: string
+): string {
+  return `blocked by ${state} dependency ${featureId}`;
+}
+
+export const FEATURE_QUEUE_RECOVERED_DETAIL =
+  "recovered: final-gate completed after retry";
+
 export function toFeatureQueueEntry(row: FeatureQueueEntryRow): FeatureQueueEntry {
   let after: string[] = [];
   try {
@@ -63,6 +78,7 @@ export function toFeatureQueueEntry(row: FeatureQueueEntryRow): FeatureQueueEntr
     state: row.state as FeatureQueueEntry["state"],
     runId: row.run_id,
     detail: row.detail,
+    ...readQueuePreviewFields(row.kickoff_json),
     createdAt: row.created_at,
     startedAt: row.started_at,
     settledAt: row.settled_at,
@@ -319,7 +335,7 @@ export class FeatureQueueStore {
   }
 
   parkDependents(failedFeatureId: string, workspaceId: string): number {
-    const detail = `blocked by failed feature ${failedFeatureId}`;
+    const detail = failedFeatureBlockDetail(failedFeatureId);
     const result = this.db
       .prepare(
         `UPDATE feature_queue_entries SET
@@ -404,5 +420,74 @@ export class FeatureQueueStore {
            AND batch_digest_at IS NULL`
       )
       .run(workspaceId);
+  }
+
+  recoverFailedEntry(id: string): boolean {
+    const result = this.db
+      .prepare(
+        `UPDATE feature_queue_entries SET
+           state = 'done',
+           detail = ?,
+           settled_at = datetime('now'),
+           updated_at = datetime('now'),
+           batch_digest_at = NULL
+         WHERE id = ? AND state = 'failed'`
+      )
+      .run(FEATURE_QUEUE_RECOVERED_DETAIL, id);
+    return result.changes === 1;
+  }
+
+  requeueBlockedDependents(
+    featureId: string,
+    workspaceId: string
+  ): string[] {
+    const requeued: string[] = [];
+    const apply = this.db.transaction(() => {
+      const visited = new Set<string>();
+      const frontier = [featureId];
+      while (frontier.length > 0) {
+        const current = frontier.shift()!;
+        if (visited.has(current)) {
+          continue;
+        }
+        visited.add(current);
+        const details = [
+          failedFeatureBlockDetail(current),
+          dependencyBlockDetail("failed", current),
+          dependencyBlockDetail("blocked", current),
+        ];
+        const rows = this.db
+          .prepare(
+            `SELECT id, feature_id FROM feature_queue_entries
+             WHERE workspace_id = ? AND state = 'blocked'
+               AND detail IN (?, ?, ?)
+             ORDER BY position ASC`
+          )
+          .all(workspaceId, ...details) as Array<{
+          id: string;
+          feature_id: string;
+        }>;
+        for (const row of rows) {
+          const result = this.db
+            .prepare(
+              `UPDATE feature_queue_entries SET
+                 state = 'queued',
+                 detail = NULL,
+                 batch_digest_at = NULL,
+                 updated_at = datetime('now')
+               WHERE id = ? AND state = 'blocked'`
+            )
+            .run(row.id);
+          if (result.changes === 1) {
+            requeued.push(row.feature_id);
+            if (!visited.has(row.feature_id)) {
+              frontier.push(row.feature_id);
+            }
+          }
+        }
+      }
+    });
+    apply();
+    return requeued;
   }
 }

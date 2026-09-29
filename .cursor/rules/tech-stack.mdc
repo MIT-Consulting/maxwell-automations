@@ -11,7 +11,7 @@ and visibility stay on the developer's machine. The product is branded **Max**
 stable implementation-facing names for the same product.
 
 ## Runtime & Language
-- **Node 20+ / TypeScript** across all packages (monorepo: daemon, dashboard, CLI, shared types).
+- **Node 22.13+ / TypeScript** (floor set by `@cursor/sdk` ≥1.0.32) across all packages (monorepo: daemon, dashboard, CLI, shared types).
 - **Agent execution:** `@cursor/sdk` in local mode (`run.stream()`, `Agent.create()`,
   `agent.send()`, `Agent.resume()`). `cursor-agent --headless` is a fallback behind an
   interface, not the primary path.

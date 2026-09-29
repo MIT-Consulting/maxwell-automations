@@ -239,6 +239,12 @@ export type DaemonSettings = {
    * `lca restart`.
    */
   pipelineHaltDiscovery?: boolean;
+  /**
+   * When true, each distinct role model is probed with a one-line prompt
+   * before a pipeline kickoff creates its root run; a rejected model refuses
+   * the kickoff. Loaded once at startup; changing it requires `lca restart`.
+   */
+  pipelineModelPreflight?: boolean;
   /** Max bytes for a single chat attachment upload. */
   maxAttachmentBytes?: number;
   /** Max attachments allowed on one send/queue/interrupt message. */

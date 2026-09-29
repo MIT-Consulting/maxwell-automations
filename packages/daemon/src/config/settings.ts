@@ -89,6 +89,11 @@ export type ResolvedSettings = {
    * Kill switch: `LCA_PIPELINE_HALT_DISCOVERY=0`. Loaded once at startup.
    */
   pipelineHaltDiscovery: boolean;
+  /**
+   * Probe each distinct role model before a pipeline kickoff. Default on.
+   * Kill switch: `LCA_PIPELINE_MODEL_PREFLIGHT=0`. Loaded once at startup.
+   */
+  pipelineModelPreflight: boolean;
   /** Max bytes for a single chat attachment upload. */
   maxAttachmentBytes: number;
   /** Max attachments allowed on one send/queue/interrupt message. */
@@ -146,6 +151,7 @@ export const DEFAULT_SETTINGS: ResolvedSettings = {
   pipelineAutoEscalate: true,
   pipelineAutoEscalateMaxPerPipeline: 2,
   pipelineHaltDiscovery: true,
+  pipelineModelPreflight: true,
   maxAttachmentBytes: 15 * 1024 * 1024,
   maxAttachmentsPerMessage: 5,
   allowedAttachmentMimeTypes: [...DEFAULT_ATTACHMENT_MIME_TYPES],
@@ -544,6 +550,10 @@ export function loadSettings(
       envBool("LCA_PIPELINE_HALT_DISCOVERY") ??
       fileSettings.pipelineHaltDiscovery ??
       DEFAULT_SETTINGS.pipelineHaltDiscovery,
+    pipelineModelPreflight:
+      envBool("LCA_PIPELINE_MODEL_PREFLIGHT") ??
+      fileSettings.pipelineModelPreflight ??
+      DEFAULT_SETTINGS.pipelineModelPreflight,
     maxAttachmentBytes: Math.max(
       MIN_ATTACHMENT_BYTES,
       pick(

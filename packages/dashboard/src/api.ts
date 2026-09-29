@@ -51,6 +51,7 @@ import {
   type WorkspaceChatDefaults,
   type WorkspaceArtifact,
   type DaemonStatus,
+  type FeatureQueueEntry,
   type UpdateSnapshot,
   type WorkspaceFileContentResponse,
   type WorkspaceMutationResponse,
@@ -225,6 +226,13 @@ export const api = {
   async listRuns(): Promise<Run[]> {
     const data = await jsonOrThrow<{ runs: Run[] }>(await request("/api/runs"));
     return data.runs;
+  },
+
+  async listFeatureQueue(): Promise<FeatureQueueEntry[]> {
+    const data = await jsonOrThrow<{ entries: FeatureQueueEntry[] }>(
+      await request("/api/feature-queue")
+    );
+    return data.entries;
   },
 
   async listWorkspaces(): Promise<Workspace[]> {
