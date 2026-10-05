@@ -117,6 +117,30 @@ describe("parseRoadmapFeatures", () => {
     ).toThrow(/regex syntax/i);
   });
 
+  it("keeps the whole list when one id has two rows in the same section", () => {
+    const features = parseRoadmapFeatures(`# Roadmap
+
+<!-- next: b60 -->
+
+## Documented Ideas
+
+| ID | Idea | Status | File |
+| --- | ---- | ------ | ---- |
+| b-xy59 | Hooks service | Planned | [doc](./b-xy59-hooks.md) |
+
+## Completed
+
+| ID | Feature | Description | Docs |
+|----|---------|-------------|------|
+| b29 | Observability hookup | first | — |
+| b29 | Observability hookup | second row | — |
+| b30 | Pending RFIs list | done | — |
+`);
+    expect(features.map((f) => f.id).sort()).toEqual(["b-xy59", "b29", "b30"]);
+    const b29 = features.find((f) => f.id === "b29");
+    expect(b29).toMatchObject({ selectable: true, section: "completed" });
+  });
+
   it("lists epics disabled with the resolver refusal reason", () => {
     const features = parseRoadmapFeatures(PER_PERSON_FIXTURE_INDEX);
     const epic = features.find((f) => f.id === "e-xy1");

@@ -93,6 +93,11 @@ Required pieces:
 Ids are never reused. Epics, if you use them, stay in prose or separate briefs
 — not as implement-fully feature folders.
 
+When an id appears in more than one of these sections, Backlog wins over
+Documented Ideas, which wins over Completed. When it appears twice in the same
+section, Max uses the first row and `max doctor` notes the extra one as
+information; nothing is blocked.
+
 ## Feature folder
 
 ```text

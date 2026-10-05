@@ -213,7 +213,7 @@ export function parseRoadmapIndex(markdown: string): ParsedRoadmapIndex {
 
 export class RoadmapIndexError extends Error {
   constructor(
-    public readonly code: "duplicate-entry" | "not-found",
+    public readonly code: "not-found",
     message: string,
     public readonly featureId: string,
     public readonly section?: RoadmapIndexSection
@@ -223,34 +223,45 @@ export class RoadmapIndexError extends Error {
   }
 }
 
+const CANONICAL_SECTION_PRIORITY: RoadmapIndexSection[] = [
+  "backlog",
+  "documented-ideas",
+  "completed",
+];
+
+/**
+ * The entry kickoff uses for an id: the first row in the highest-priority
+ * section that lists it. Extra rows for the same id in the same section are
+ * tolerated here and reported by readiness as information.
+ */
 export function pickCanonicalEntry(
   entries: RoadmapIndexEntry[],
   featureId: string
 ): RoadmapIndexEntry {
-  const priority: RoadmapIndexSection[] = [
-    "backlog",
-    "documented-ideas",
-    "completed",
-  ];
-  for (const section of priority) {
-    const inSection = entries.filter(
+  for (const section of CANONICAL_SECTION_PRIORITY) {
+    const first = entries.find(
       (e) => e.featureId === featureId && e.section === section
     );
-    if (inSection.length > 1) {
-      throw new RoadmapIndexError(
-        "duplicate-entry",
-        `Roadmap index has duplicate ${featureId} entries in the same section`,
-        featureId,
-        section
-      );
-    }
-    if (inSection.length === 1) return inSection[0]!;
+    if (first) return first;
   }
   throw new RoadmapIndexError(
     "not-found",
     `Feature ${featureId} not found in roadmap index`,
     featureId
   );
+}
+
+/** Sections in which `featureId` has more than one row. */
+export function duplicateEntrySections(
+  entries: RoadmapIndexEntry[],
+  featureId: string
+): RoadmapIndexSection[] {
+  const counts = new Map<RoadmapIndexSection, number>();
+  for (const entry of entries) {
+    if (entry.featureId !== featureId) continue;
+    counts.set(entry.section, (counts.get(entry.section) ?? 0) + 1);
+  }
+  return CANONICAL_SECTION_PRIORITY.filter((s) => (counts.get(s) ?? 0) > 1);
 }
 
 /** Whether an entry exists anywhere in the parsed index. */

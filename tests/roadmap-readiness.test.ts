@@ -173,9 +173,9 @@ describe("analyzeRoadmapReadiness", () => {
     expect(report.findings.some((f) => f.featureIds?.includes("b99"))).toBe(
       true
     );
-    expect(report.findings.some((f) => f.code === "duplicate-entry")).toBe(
-      true
-    );
+    const duplicate = report.findings.find((f) => f.code === "duplicate-entry");
+    expect(duplicate?.impact).toBe("info");
+    expect(duplicate?.message).toMatch(/b98 more than once in ## Completed; Max uses the first row/);
     expect(report.findings.some((f) => f.code === "format-violation")).toBe(
       true
     );
@@ -185,6 +185,9 @@ describe("analyzeRoadmapReadiness", () => {
     expect(report.features.filter((f) => f.id === "b98")).toHaveLength(1);
     expect(report.state).toBe("adoptable");
     expect(roadmapReadinessHasBlockers(report)).toBe(true);
+    expect(() =>
+      assertKickoffReadinessAllowed(report, { kind: "feature-id", featureId: "b98" })
+    ).not.toThrow();
   });
 
   it("lists each cross-section id once via canonical section priority", () => {
@@ -223,7 +226,7 @@ describe("analyzeRoadmapReadiness", () => {
     );
   });
 
-  it("emits duplicate-entry for same-section extras after a cross-section row", () => {
+  it("notes same-section extras after a cross-section row without blocking", () => {
     const index = `# Roadmap
 
 <!-- next: b99 -->
@@ -242,14 +245,14 @@ describe("analyzeRoadmapReadiness", () => {
 | b54 | Documented extra | Planned | — |
 `;
     const report = analyzeRoadmapReadiness(baseInputs({ indexMarkdown: index }));
-    expect(
-      report.findings.some(
-        (f) => f.code === "duplicate-entry" && f.featureIds?.includes("b54")
-      )
-    ).toBe(true);
+    const duplicate = report.findings.find(
+      (f) => f.code === "duplicate-entry" && f.featureIds?.includes("b54")
+    );
+    expect(duplicate?.impact).toBe("info");
     const b54 = report.features.filter((f) => f.id === "b54");
     expect(b54).toHaveLength(1);
     expect(b54[0]!.section).toBe("documented-ideas");
+    expect(roadmapReadinessHasBlockers(report)).toBe(false);
   });
 
   it("accepts per-person ids without a declaration and flags --idea refusal", () => {

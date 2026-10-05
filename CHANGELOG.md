@@ -12,6 +12,16 @@ and version numbers follow [SemVer](https://semver.org/).
 
 - none
 
+## [1.1.3] - 2026-10-05
+
+### Fixed
+
+- A feature id listed twice in the same index section no longer blocks anything: kickoff and the dashboard picker use the first row, and doctor reports the extra row as information. On 1.1.1 and 1.1.2 one such row emptied the picker's **Existing feature** list for the whole workspace.
+
+### Upgrade actions
+
+- Windows installs still on 1.0.7 or earlier: the 1.1.1 note applies unchanged — `max update --apply` cannot make the hop; move the pin by hand with `git checkout v1.1.3`, then `npm ci`, `npm run build`, `max skills install`, `max up`. From 1.1.0 onward, `--apply` works.
+
 ## [1.1.2] - 2026-10-05
 
 ### Fixed

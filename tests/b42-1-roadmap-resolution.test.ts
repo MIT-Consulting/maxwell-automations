@@ -548,7 +548,7 @@ describe("b42.1 resolveImplementFullyKickoff (existing feature)", () => {
     );
   });
 
-  it("rejects unknown id, same-section duplicates, and unsafe links", () => {
+  it("rejects unknown id and unsafe links; same-section duplicates use the first row", () => {
     withTempWorkspace(
       (workspace) => {
         writeIndex(
@@ -578,18 +578,14 @@ describe("b42.1 resolveImplementFullyKickoff (existing feature)", () => {
           expect((err as RoadmapResolveError).category).toBe("not_found");
         }
 
-        try {
-          resolveImplementFullyKickoff(
-            workspace,
-            { kind: "feature-id", featureId: "b42" },
-            BOUNDS
-          );
-          expect.fail("expected duplicate failure");
-        } catch (err) {
-          expect(err).toBeInstanceOf(RoadmapResolveError);
-          expect((err as RoadmapResolveError).category).toBe("bad_request");
-          expect((err as RoadmapResolveError).message).toMatch(/duplicate/i);
-        }
+        const duplicated = resolveImplementFullyKickoff(
+          workspace,
+          { kind: "feature-id", featureId: "b42" },
+          BOUNDS
+        );
+        expect(duplicated.featureId).toBe("b42");
+        expect(duplicated.idea).toContain("One");
+        expect(duplicated.idea).not.toContain("duplicate same section");
 
         for (const id of ["b43", "b44", "b45"] as const) {
           try {

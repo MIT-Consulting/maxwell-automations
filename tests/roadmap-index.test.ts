@@ -7,6 +7,7 @@ import {
   parseRoadmapIndex,
   parseTableEntries,
   pickCanonicalEntry,
+  duplicateEntrySections,
   defaultIdFormats,
   sectionBody,
 } from "@lca/shared";
@@ -140,13 +141,15 @@ describe("parseRoadmapIndex", () => {
     expect(() => parseRoadmapIndex(markdown)).toThrow(IdFormatError);
   });
 
-  it("throws on duplicate entries in the same section via pickCanonicalEntry", () => {
+  it("uses the first row when an id appears twice in the same section", () => {
     const formats = defaultIdFormats();
     const entries = parseBacklogEntries(
       "- **b42** One — a.\n- **b42** Two — b.",
       formats.feature
     );
-    expect(() => pickCanonicalEntry(entries, "b42")).toThrow(/duplicate/i);
+    expect(pickCanonicalEntry(entries, "b42").title).toBe("One");
+    expect(duplicateEntrySections(entries, "b42")).toEqual(["backlog"]);
+    expect(duplicateEntrySections(entries, "b99")).toEqual([]);
   });
 
   it("ignores id-format mentions inside backlog prose", () => {

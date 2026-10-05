@@ -11,12 +11,12 @@ Public repos (lockstep tags):
 ## Pin to a tag
 
 Do not track `main`. Pin your fork to a release tag. Latest tag is
-`v1.1.2` (2026-10-05). Upgrade deliberately with the changelog in hand.
+`v1.1.3` (2026-10-05). Upgrade deliberately with the changelog in hand.
 
 ```bash
 git clone https://github.com/MIT-Consulting/maxwell-automations.git
 cd maxwell-automations
-git checkout v1.1.2
+git checkout v1.1.3
 ```
 
 Skills bundle: same tag on `maxwell-automations-skills`. Breaking skill changes
@@ -45,7 +45,7 @@ Apply runs the **installed** CLI's code, so a bug in the old version's apply
 path cannot be fixed by the release it is installing. Known case: on Windows,
 1.0.7 and earlier fail `--apply` with `spawnSync npm.cmd EINVAL` (rollback
 leaves the checkout on the old tag with its build intact, daemon stopped).
-Move that pin once by hand — `git checkout v1.1.2`, `npm ci`, `npm run build`,
+Move that pin once by hand — `git checkout v1.1.3`, `npm ci`, `npm run build`,
 `max skills install`, `max up` — and `--apply` works from then on.
 
 Root `.npmrc` ships with **`engine-strict=true`** on public exports, so `npm ci`

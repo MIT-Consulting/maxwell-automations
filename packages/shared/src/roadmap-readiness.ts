@@ -359,6 +359,21 @@ function analyzeTracker(
   }
 }
 
+function sectionLabel(section: RoadmapIndexSection): string {
+  switch (section) {
+    case "backlog":
+      return "## Backlog";
+    case "documented-ideas":
+      return "## Documented Ideas";
+    case "completed":
+      return "## Completed";
+    default: {
+      const _exhaustive: never = section;
+      return _exhaustive;
+    }
+  }
+}
+
 function trackerErrorFix(code: RoadmapTrackerError["code"]): string {
   switch (code) {
     case "missing-header":
@@ -587,11 +602,12 @@ export function analyzeRoadmapReadiness(
   for (const entry of parsed.entries) {
     const pairKey = `${entry.featureId}\0${entry.section}`;
     if (seenCanonicalPairs.has(pairKey)) {
+      // Kickoff uses the first row; the extra one is noise, not a blocker.
       findings.push({
         code: "duplicate-entry",
-        impact: "blocks-some",
-        message: `Roadmap index has duplicate ${entry.featureId} entries in the same section`,
-        fix: "Remove or merge the duplicate row in docs/roadmap/00-index.md.",
+        impact: "info",
+        message: `Roadmap index lists ${entry.featureId} more than once in ${sectionLabel(entry.section)}; Max uses the first row`,
+        fix: "Merge the rows in docs/roadmap/00-index.md when convenient.",
         fixable_by: "agent",
         featureIds: [entry.featureId],
       });
