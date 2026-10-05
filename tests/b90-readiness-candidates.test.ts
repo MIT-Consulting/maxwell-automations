@@ -166,7 +166,7 @@ describe("b90 readiness candidate rules", () => {
 
 | Phase | File | Status | Commit |
 | --- | --- | --- | --- |
-| 1 | [01-a.md](./01-a.md) | Pending | |
+| 1 | [01-a.md](./01-a.md) | Queued | |
 `;
     const report = analyzeRoadmapReadiness(
       baseInputs({
@@ -194,7 +194,11 @@ describe("b90 readiness candidate rules", () => {
     );
     expect(trackerFindings).toHaveLength(1);
     expect(trackerFindings[0]?.fixable_by).toBe("agent");
-    expect(trackerFindings[0]?.fix).toContain("Depends on");
+    expect(trackerFindings[0]?.message).toBe(
+      "Feature folder b17-sdk-ui-context-handoff has a phase tracker Max cannot read: Unknown tracker status \"Queued\""
+    );
+    expect(trackerFindings[0]?.fix).toMatch(/Pending, In Progress, or Done/i);
+    expect(trackerFindings[0]?.fix).not.toContain("add a Depends on column");
     expect(trackerFindings[0]?.featureIds).toEqual(
       expect.arrayContaining(["b17"])
     );

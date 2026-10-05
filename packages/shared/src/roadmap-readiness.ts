@@ -10,8 +10,10 @@ import {
 } from "./roadmap-ids.js";
 import {
   formatFeatureIdMustMatchMessage,
+  hasIndexEntry,
   IdFormatError,
   parseRoadmapIndex,
+  pickCanonicalEntry,
   sectionBody,
   type RoadmapIndexEntry,
   type RoadmapIndexSection,
@@ -344,9 +346,8 @@ function analyzeTracker(
       const finding: RoadmapFinding = {
         code: "bad-tracker-header",
         impact: "blocks-some",
-        message: `Feature folder ${slug} has a malformed phase tracker`,
-        fix:
-          "In this folder's 00-index.md, add a Depends on column: use header | Phase | File | Status | Depends on | Commit | with — in each Depends on cell and N — title phase cells.",
+        message: `Feature folder ${slug} has a phase tracker Max cannot read: ${err.message}`,
+        fix: trackerErrorFix(err.code),
         fixable_by: "agent",
         featureIds: [featureId],
         path: trackerPath,
@@ -355,6 +356,30 @@ function analyzeTracker(
       trackerFindingBySlug.set(slug, finding);
     }
     return undefined;
+  }
+}
+
+function trackerErrorFix(code: RoadmapTrackerError["code"]): string {
+  switch (code) {
+    case "missing-header":
+      return "Add the five-column tracker table with header | Phase | File | Status | Depends on | Commit |.";
+    case "unknown-status":
+      return "Start each Status cell with Pending, In Progress, or Done.";
+    case "duplicate-phase":
+      return "Make phase numbers unique in the tracker table.";
+    case "malformed-phase":
+      return "Start each Phase cell with the phase number (1, 1 — Title, or P1 — Title).";
+    case "malformed-dependency":
+      return "List phase numbers or — in each Depends on cell.";
+    case "missing-link":
+      return "Put the phase file in the File cell (markdown link or plain path).";
+    case "misordered-header":
+    case "extra-header":
+      return "Use the documented five-column header: | Phase | File | Status | Depends on | Commit |.";
+    default: {
+      const _exhaustive: never = code;
+      return _exhaustive;
+    }
   }
 }
 
@@ -515,7 +540,9 @@ export function analyzeRoadmapReadiness(
 
   analyzeIdeaMarkers(markdown, findings);
 
-  const ignoredIds = scanIgnoredSectionIds(markdown, parsed.formats);
+  const ignoredIds = scanIgnoredSectionIds(markdown, parsed.formats).filter(
+    (id) => !hasIndexEntry(parsed.entries, id)
+  );
   if (ignoredIds.length > 0) {
     findings.push({
       code: "ignored-section-ids",
@@ -551,12 +578,15 @@ export function analyzeRoadmapReadiness(
   }
 
   const names = childNames(inputs.roadmapChildren);
-  const seenCanonical = new Map<string, RoadmapIndexSection>();
+  const seenCanonicalPairs = new Set<string>();
   const trackerFindingBySlug = new Map<string, RoadmapFinding>();
+  const entriesForPlanning: RoadmapIndexEntry[] = [];
+  const uniqueFeatureIds: string[] = [];
+  const seenFeatureIds = new Set<string>();
 
   for (const entry of parsed.entries) {
-    const prior = seenCanonical.get(entry.featureId);
-    if (prior === entry.section) {
+    const pairKey = `${entry.featureId}\0${entry.section}`;
+    if (seenCanonicalPairs.has(pairKey)) {
       findings.push({
         code: "duplicate-entry",
         impact: "blocks-some",
@@ -567,11 +597,7 @@ export function analyzeRoadmapReadiness(
       });
       continue;
     }
-    if (prior != null && prior !== entry.section) {
-      // Cross-section duplicates are resolved by pickCanonicalEntry at kickoff.
-    } else {
-      seenCanonical.set(entry.featureId, entry.section);
-    }
+    seenCanonicalPairs.add(pairKey);
 
     for (const href of entryLinks(entry)) {
       if (!isLinkResolvable(href, names)) {
@@ -587,9 +613,18 @@ export function analyzeRoadmapReadiness(
       }
     }
 
+    entriesForPlanning.push(entry);
+    if (!seenFeatureIds.has(entry.featureId)) {
+      seenFeatureIds.add(entry.featureId);
+      uniqueFeatureIds.push(entry.featureId);
+    }
+  }
+
+  for (const featureId of uniqueFeatureIds) {
+    const canonical = pickCanonicalEntry(entriesForPlanning, featureId);
     features.push(
       planFeature(
-        entry,
+        canonical,
         inputs.roadmapChildren,
         inputs.trackerMarkdownBySlug,
         truncatedSlugs,

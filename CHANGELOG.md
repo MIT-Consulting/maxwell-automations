@@ -12,6 +12,22 @@ and version numbers follow [SemVer](https://semver.org/).
 
 - none
 
+## [1.1.2] - 2026-10-05
+
+### Fixed
+
+- Readiness no longer blocks `--feature` for ids that appear in both a priority table and **Documented Ideas**; only ids with no canonical index row stay in `ignored-section-ids`.
+- Legacy trackers with bare phase numbers, numbered or `P0`-style Phase cells (`1. Title`, `P2 — Title`, `Phase 3: Title`), `P1`-style `Depends on` references, `—` File cells on phases without a doc, four-column AMOS-style headers, or status cells with trailing notes parse cleanly instead of blocking kickoff.
+- Tracker findings now carry the real parser error instead of a generic or wrong hint (for example a false “add Depends on” message when that column already exists).
+- Doctor **Per feature:** and `--json` `features` list each id once (Backlog beats Documented Ideas beats Completed).
+
+### Upgrade actions
+
+- `max roadmap fix` repairs **only** missing canonical sections (`## Backlog`, `## Completed`, `## Documented Ideas`), a missing **plain** `<!-- next: … -->` marker, and the id-format declaration. Per-person `next:` markers skip the plain-marker step; the plan is not refused for them.
+- Tracker, ignored-section, duplicate-row, and other readiness findings need agent or operator edits — doctor fix lines say which. `roadmap fix` does not repair those.
+- Repos that showed `adoptable` on 1.1.0 or 1.1.1 should run `max doctor <workspace>` after upgrading **before** editing any tracker.
+- Windows installs still on 1.0.7 or earlier: the 1.1.1 note applies unchanged — `max update --apply` cannot make the hop; move the pin by hand with `git checkout v1.1.2`, then `npm ci`, `npm run build`, `max skills install`, `max up`. From 1.1.0 onward, `--apply` works.
+
 ## [1.1.1] - 2026-10-04
 
 ### Fixed
@@ -20,7 +36,20 @@ and version numbers follow [SemVer](https://semver.org/).
 
 ### Upgrade actions
 
-- none
+- **Windows, coming from 1.0.7 or earlier: `max update --apply` cannot make this hop.** The installed CLI runs its own `update-apply`, and 1.0.7's spawns `npm.cmd` without `shell: true`, so apply fails `spawnSync npm.cmd EINVAL` at `npm ci` and the rollback fails the same way (HEAD is reset to the backup first, so the checkout stays on 1.0.7 with its build intact; the daemon is left stopped). Move the pin once by hand, then `--apply` works for later releases:
+
+  ```powershell
+  git status --short            # must be empty
+  git fetch --tags origin
+  git checkout v1.1.1
+  npm ci                        # engine-strict: needs Node 22.13+
+  npm run build
+  max skills install
+  max up
+  max doctor
+  ```
+
+- Non-Windows installs: `max update --apply` works as documented; the 1.1.0 Upgrade actions still apply.
 
 ## [1.1.0] - 2026-10-04
 

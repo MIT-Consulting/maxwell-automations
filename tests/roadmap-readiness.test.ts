@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   analyzeRoadmapReadiness,
+  assertKickoffReadinessAllowed,
+  KickoffReadinessError,
   roadmapReadinessHasBlockers,
   type RoadmapReadinessInputs,
 } from "@lca/shared";
@@ -39,6 +41,19 @@ const PER_PERSON_INDEX = readFileSync(
   ),
   "utf8"
 );
+
+const PRIORITY_TABLES_INDEX = readFileSync(
+  join(
+    process.cwd(),
+    "tests/fixtures/roadmap-corpus/priority-tables/docs/roadmap/00-index.md"
+  ),
+  "utf8"
+);
+
+const PRIORITY_TABLES_CHILDREN: RoadmapReadinessInputs["roadmapChildren"] = [
+  { name: "b-xy57-dual.md", kind: "file" },
+  { name: "b-xy58-thin-feature", kind: "dir" },
+];
 
 function baseInputs(
   overrides: Partial<RoadmapReadinessInputs> = {}
@@ -117,6 +132,34 @@ describe("analyzeRoadmapReadiness", () => {
     );
   });
 
+  it("reports only P-table-only ids in ignored-section-ids on priority-table index", () => {
+    const report = analyzeRoadmapReadiness(
+      baseInputs({
+        indexMarkdown: PRIORITY_TABLES_INDEX,
+        roadmapChildren: PRIORITY_TABLES_CHILDREN,
+      })
+    );
+    const ignored = report.findings.filter((f) => f.code === "ignored-section-ids");
+    expect(ignored).toHaveLength(1);
+    expect(ignored[0]!.featureIds).toEqual(["b22", "b23"]);
+    expect(() =>
+      assertKickoffReadinessAllowed(report, {
+        kind: "feature-id",
+        featureId: "b-xy57",
+      })
+    ).not.toThrow();
+    try {
+      assertKickoffReadinessAllowed(report, {
+        kind: "feature-id",
+        featureId: "b22",
+      });
+      expect.fail("expected kickoff refusal for P-table-only id");
+    } catch (err) {
+      expect(err).toBeInstanceOf(KickoffReadinessError);
+      expect((err as Error).message).toMatch(/appear only in sections Max ignores/i);
+    }
+  });
+
   it("surfaces ignored-section ids and duplicate rows", () => {
     const report = analyzeRoadmapReadiness(
       baseInputs({
@@ -139,8 +182,74 @@ describe("analyzeRoadmapReadiness", () => {
     expect(report.findings.some((f) => f.featureIds?.includes("x99"))).toBe(
       true
     );
+    expect(report.features.filter((f) => f.id === "b98")).toHaveLength(1);
     expect(report.state).toBe("adoptable");
     expect(roadmapReadinessHasBlockers(report)).toBe(true);
+  });
+
+  it("lists each cross-section id once via canonical section priority", () => {
+    const dualSectionIndex = `# Roadmap
+
+<!-- next: b99 -->
+
+## Backlog
+
+- **b40** Backlog copy — no link.
+
+## Completed
+
+| ID | Feature | Description | Docs |
+|----|---------|-------------|------|
+| b54 | Completed copy | Done | — |
+
+## Documented Ideas
+
+| ID | Idea | Status | File |
+|----|------|--------|------|
+| b54 | Documented copy | Planned | — |
+| b40 | Idea copy | Planned | — |
+`;
+    const report = analyzeRoadmapReadiness(
+      baseInputs({ indexMarkdown: dualSectionIndex })
+    );
+    const b54 = report.features.filter((f) => f.id === "b54");
+    expect(b54).toHaveLength(1);
+    expect(b54[0]!.section).toBe("documented-ideas");
+    const b40 = report.features.filter((f) => f.id === "b40");
+    expect(b40).toHaveLength(1);
+    expect(b40[0]!.section).toBe("backlog");
+    expect(report.findings.some((f) => f.code === "duplicate-entry")).toBe(
+      false
+    );
+  });
+
+  it("emits duplicate-entry for same-section extras after a cross-section row", () => {
+    const index = `# Roadmap
+
+<!-- next: b99 -->
+
+## Completed
+
+| ID | Feature | Description | Docs |
+|----|---------|-------------|------|
+| b54 | Completed copy | Done | — |
+
+## Documented Ideas
+
+| ID | Idea | Status | File |
+|----|------|--------|------|
+| b54 | Documented copy | Planned | — |
+| b54 | Documented extra | Planned | — |
+`;
+    const report = analyzeRoadmapReadiness(baseInputs({ indexMarkdown: index }));
+    expect(
+      report.findings.some(
+        (f) => f.code === "duplicate-entry" && f.featureIds?.includes("b54")
+      )
+    ).toBe(true);
+    const b54 = report.features.filter((f) => f.id === "b54");
+    expect(b54).toHaveLength(1);
+    expect(b54[0]!.section).toBe("documented-ideas");
   });
 
   it("accepts per-person ids without a declaration and flags --idea refusal", () => {
@@ -290,6 +399,37 @@ describe("analyzeRoadmapReadiness", () => {
       true
     );
     expect(symlink.features.some((f) => f.kind === "blocked")).toBe(true);
+  });
+
+  it("maps bad-tracker-header message and fix from parser error code", () => {
+    const missingLinkTracker = `# Feature
+
+| Phase | File | Status | Depends on | Commit |
+| --- | --- | --- | --- | --- |
+| 1 — First | [first]( ) | Pending | — | — |
+`;
+    const report = analyzeRoadmapReadiness(
+      baseInputs({
+        indexMarkdown: `# Roadmap
+
+<!-- next: b99 -->
+
+## Backlog
+
+- **b55** Missing link — [docs](./b55-missing-link/00-index.md)
+`,
+        roadmapChildren: [{ name: "b55-missing-link", kind: "dir" }],
+        trackerMarkdownBySlug: {
+          "b55-missing-link": missingLinkTracker,
+        },
+      })
+    );
+
+    const finding = report.findings.find((f) => f.code === "bad-tracker-header");
+    expect(finding?.message).toContain("Max cannot read:");
+    expect(finding?.message).toContain("missing a linked file");
+    expect(finding?.fix).toMatch(/phase file/i);
+    expect(finding?.fixable_by).toBe("agent");
   });
 });
 

@@ -115,6 +115,13 @@ Status values: `Pending`, `In Progress`, `Done` (legacy `Complete` is still
 accepted in existing trackers). Commit hashes are recorded in a later
 docs-touching commit, not as a dedicated "record the hash" commit.
 
+Max also reads legacy trackers: four-column `Phase | File | Status | Commit`
+tables, Phase cells written as `1`, `1. Title`, `P0 — Title`, or
+`Phase 2 — Title`, `Depends on` cells that use the same `P1` style, a `—` File
+cell on phases that never had a doc, and status cells with a trailing note
+after `—`, `-`, `:`, or `(`. New trackers should still use the five-column
+form above.
+
 ### Phase file
 
 Each phase includes a `## Parallel Safety` section:

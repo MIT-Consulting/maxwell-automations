@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   filterRoadmapFeatures,
@@ -5,7 +7,15 @@ import {
   parseRoadmapFeatures,
 } from "../packages/dashboard/src/roadmapFeatures.ts";
 import type { RoadmapReadinessReport } from "@lca/shared";
-import { parseRoadmapIndex } from "@lca/shared";
+import { analyzeRoadmapReadiness, parseRoadmapIndex } from "@lca/shared";
+
+const PRIORITY_TABLES_INDEX = readFileSync(
+  join(
+    process.cwd(),
+    "tests/fixtures/roadmap-corpus/priority-tables/docs/roadmap/00-index.md"
+  ),
+  "utf8"
+);
 
 const NBBA_STYLE_INDEX = `# Roadmap
 
@@ -136,6 +146,31 @@ describe("parseRoadmapFeatures", () => {
     const features = parseRoadmapFeatures(NBBA_STYLE_INDEX);
     const ranked = filterRoadmapFeatures(features, "b");
     expect(ranked.map((f) => f.id)).toEqual(["b67", "b21", "b65"]);
+  });
+
+  it("disables only P-table-only ids from a live readiness report", () => {
+    const report = analyzeRoadmapReadiness({
+      gitRepo: true,
+      indexMarkdown: PRIORITY_TABLES_INDEX,
+      roadmapChildren: [
+        { name: "b-xy57-dual.md", kind: "file" },
+        { name: "b-xy58-thin-feature", kind: "dir" },
+      ],
+      trackerMarkdownBySlug: {},
+      candidateFiles: [],
+    });
+    const features = parseRoadmapFeatures(PRIORITY_TABLES_INDEX);
+    const merged = mergeReadinessDisabledFeatures(features, report);
+    expect(merged.find((f) => f.id === "b-xy57")?.selectable).toBe(true);
+    expect(merged.find((f) => f.id === "b-xy58")?.selectable).toBe(true);
+    expect(merged.find((f) => f.id === "b22")).toMatchObject({
+      selectable: false,
+      disabledReason: expect.stringMatching(/sections Max ignores/i),
+    });
+    expect(merged.find((f) => f.id === "b23")).toMatchObject({
+      selectable: false,
+      disabledReason: expect.stringMatching(/sections Max ignores/i),
+    });
   });
 
   it("adds disabled rows for readiness ignored ids and format violations", () => {

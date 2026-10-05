@@ -278,13 +278,6 @@ export function buildRoadmapFixPlanDraft(
         "Duplicate next-id markers — keep one <!-- next: … --> before running fix.",
     };
   }
-  if (markerSnapshot.some((m) => m.kind === "per-person")) {
-    return {
-      kind: "refused",
-      message:
-        "Per-person next markers cannot be fixed automatically — add items with --feature instead.",
-    };
-  }
 
   const baseContent = markdown;
   let changed = false;
@@ -333,12 +326,13 @@ export function buildRoadmapFixPlanDraft(
 
   if (!changed || markdown === baseContent) {
     const report = analyzeRoadmapReadiness(inputs);
-    const cliFixable = report.findings.some((f) => f.fixable_by === "cli");
+    const n = report.findings.length;
     return {
       kind: "noop",
-      message: cliFixable
-        ? "No automatic CLI edits are available for the current findings."
-        : "No CLI-fixable roadmap changes.",
+      message:
+        n === 0
+          ? "No CLI-fixable roadmap changes."
+          : `No automatic edits available. ${n} finding(s) need an agent or a person — see max doctor <workspace>.`,
     };
   }
 

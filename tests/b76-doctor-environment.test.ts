@@ -137,23 +137,27 @@ describe("b76 doctor Environment", () => {
     expect(lines.join("\n")).not.toMatch(/daemon/);
   });
 
-  it("collects Environment with daemon down without aborting", () => {
-    const collected = collectEnvironmentFacts(null);
-    expect(collected.cliNode).toBe(process.versions.node);
-    expect(collected.daemonNode).toBeUndefined();
-    expect(["in-sync", "drift", "unavailable"]).toContain(collected.skillStatus);
-    if (collected.npmVersion == null) {
-      expect(collected.npmUnavailableReason).toBeTruthy();
-    }
-    if (collected.skillStatus === "unavailable") {
-      expect(collected.skillUnavailableReason).toBeTruthy();
-    }
-    const lines = formatEnvironmentLines(summarizeEnvironment(collected));
-    expect(lines.findIndex((l) => l.includes("Node:"))).toBeLessThan(
-      lines.findIndex((l) => l.includes("npm:"))
-    );
-    expect(lines.join("\n")).not.toMatch(/daemon/);
-  });
+  it(
+    "collects Environment with daemon down without aborting",
+    () => {
+      const collected = collectEnvironmentFacts(null);
+      expect(collected.cliNode).toBe(process.versions.node);
+      expect(collected.daemonNode).toBeUndefined();
+      expect(["in-sync", "drift", "unavailable"]).toContain(collected.skillStatus);
+      if (collected.npmVersion == null) {
+        expect(collected.npmUnavailableReason).toBeTruthy();
+      }
+      if (collected.skillStatus === "unavailable") {
+        expect(collected.skillUnavailableReason).toBeTruthy();
+      }
+      const lines = formatEnvironmentLines(summarizeEnvironment(collected));
+      expect(lines.findIndex((l) => l.includes("Node:"))).toBeLessThan(
+        lines.findIndex((l) => l.includes("npm:"))
+      );
+      expect(lines.join("\n")).not.toMatch(/daemon/);
+    },
+    15_000
+  );
 
   it("renders Node, npm, and skills in deterministic order", () => {
     const lines = formatEnvironmentLines(

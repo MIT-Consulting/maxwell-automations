@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  analyzeRoadmapReadiness,
   buildRoadmapFixPlanDraft,
   isAdditiveRoadmapEdit,
   ROADMAP_INDEX_REL,
@@ -141,20 +142,48 @@ describe("b78 roadmap fix plan", () => {
     expect(draft.message).toMatch(/Duplicate next-id markers/);
   });
 
-  it("refuses per-person next markers", () => {
-    const draft = buildRoadmapFixPlanDraft(
-      baseInputs({
-        indexMarkdown: `# Roadmap
+  it("skips plain next marker when per-person markers are present", () => {
+    const inputs = baseInputs({
+      indexMarkdown: `# Roadmap
 
 <!-- next: b-dm58 -->
 
 ## Backlog
 `,
+    });
+    const draft = buildRoadmapFixPlanDraft(inputs);
+    expect(draft.kind).not.toBe("refused");
+    expect(draft.kind).toBe("noop");
+    if (draft.kind !== "noop") return;
+    const report = analyzeRoadmapReadiness(inputs);
+    if (report.findings.length === 0) {
+      expect(draft.message).toBe("No CLI-fixable roadmap changes.");
+    } else {
+      expect(draft.message).toBe(
+        `No automatic edits available. ${report.findings.length} finding(s) need an agent or a person — see max doctor <workspace>.`
+      );
+    }
+  });
+
+  it("adds canonical sections without inserting a plain next marker beside per-person markers", () => {
+    const draft = buildRoadmapFixPlanDraft(
+      baseInputs({
+        indexMarkdown: `# Roadmap
+
+<!-- next: b-xy57 -->
+<!-- next: b-qr58 -->
+`,
       })
     );
-    expect(draft.kind).toBe("refused");
-    if (draft.kind !== "refused") return;
-    expect(draft.message).toMatch(/Per-person next markers/);
+    expect(draft.kind).toBe("ready");
+    if (draft.kind !== "ready") return;
+    expect(draft.proposedContent).toMatch(/## Backlog/);
+    expect(draft.proposedContent).toMatch(/## Completed/);
+    expect(draft.proposedContent).toMatch(/## Documented Ideas/);
+    expect(draft.proposedContent).not.toMatch(/<!-- next: b\d+ -->/);
+    expect(
+      isAdditiveRoadmapEdit(draft.baseContent, draft.proposedContent)
+    ).toBe(true);
   });
 
   it("refuses truncated index reads", () => {
@@ -211,9 +240,8 @@ describe("b78 roadmap fix plan", () => {
   });
 
   it("returns noop when nothing is auto-fixable", () => {
-    const draft = buildRoadmapFixPlanDraft(
-      baseInputs({
-        indexMarkdown: `# Roadmap
+    const inputs = baseInputs({
+      indexMarkdown: `# Roadmap
 
 <!-- next: b99 -->
 
@@ -226,9 +254,18 @@ describe("b78 roadmap fix plan", () => {
 | ID | Feature | Description | Docs |
 |----|---------|-------------|------|
 `,
-      })
-    );
+    });
+    const draft = buildRoadmapFixPlanDraft(inputs);
     expect(draft.kind).toBe("noop");
+    if (draft.kind !== "noop") return;
+    const report = analyzeRoadmapReadiness(inputs);
+    if (report.findings.length === 0) {
+      expect(draft.message).toBe("No CLI-fixable roadmap changes.");
+    } else {
+      expect(draft.message).toBe(
+        `No automatic edits available. ${report.findings.length} finding(s) need an agent or a person — see max doctor <workspace>.`
+      );
+    }
   });
 });
 

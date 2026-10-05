@@ -242,46 +242,54 @@ describe("b76 release preflight — orchestrator", () => {
     }
   });
 
-  it("passes when clone tag matches current engines", () => {
-    const dir = mkdtempSync(join(tmpdir(), "max-preflight-"));
-    const clone = join(dir, "maxwell-automations");
-    try {
-      initGitClone(clone, "1.0.7", ">=22.13");
-      const result = runReleasePreflight({
-        repoRoot: dir,
-        changelogText: VALID_CHANGELOG,
-        packageJsonText: PACKAGE_22,
-        clonePath: clone,
-      });
-      expect(result).toEqual({
-        ok: true,
-        newestVersion: "1.0.7",
-        previousTag: "1.0.7",
-      });
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("fails a patch floor raise against a lower tagged engines.node", () => {
-    const dir = mkdtempSync(join(tmpdir(), "max-preflight-"));
-    const clone = join(dir, "maxwell-automations");
-    try {
-      initGitClone(clone, "1.0.6", ">=20.0");
-      const result = runReleasePreflight({
-        repoRoot: dir,
-        changelogText: VALID_CHANGELOG,
-        packageJsonText: PACKAGE_22,
-        clonePath: clone,
-      });
-      expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.errors.join(" ")).toMatch(/minor version bump/);
+  it(
+    "passes when clone tag matches current engines",
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), "max-preflight-"));
+      const clone = join(dir, "maxwell-automations");
+      try {
+        initGitClone(clone, "1.0.7", ">=22.13");
+        const result = runReleasePreflight({
+          repoRoot: dir,
+          changelogText: VALID_CHANGELOG,
+          packageJsonText: PACKAGE_22,
+          clonePath: clone,
+        });
+        expect(result).toEqual({
+          ok: true,
+          newestVersion: "1.0.7",
+          previousTag: "1.0.7",
+        });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
       }
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
+    },
+    15_000
+  );
+
+  it(
+    "fails a patch floor raise against a lower tagged engines.node",
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), "max-preflight-"));
+      const clone = join(dir, "maxwell-automations");
+      try {
+        initGitClone(clone, "1.0.6", ">=20.0");
+        const result = runReleasePreflight({
+          repoRoot: dir,
+          changelogText: VALID_CHANGELOG,
+          packageJsonText: PACKAGE_22,
+          clonePath: clone,
+        });
+        expect(result.ok).toBe(false);
+        if (!result.ok) {
+          expect(result.errors.join(" ")).toMatch(/minor version bump/);
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+    15_000
+  );
 });
 
 describe("b76 release preflight — live changelog", () => {

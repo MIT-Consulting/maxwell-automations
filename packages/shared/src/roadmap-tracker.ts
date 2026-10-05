@@ -12,6 +12,7 @@ export type TrackerPhaseStatus =
 export type TrackerPhase = {
   number: number;
   title: string;
+  /** Linked href or plain path; `""` when the row has no file (legacy `—`). */
   file: string;
   status: TrackerPhaseStatus;
   dependsOn: string[];
@@ -30,6 +31,7 @@ export type RoadmapTrackerErrorCode =
   | "extra-header"
   | "unknown-status"
   | "duplicate-phase"
+  | "malformed-phase"
   | "malformed-dependency"
   | "missing-link";
 
@@ -43,7 +45,7 @@ export class RoadmapTrackerError extends Error {
   }
 }
 
-const REQUIRED_HEADERS = [
+const FIVE_COLUMN_HEADERS = [
   "Phase",
   "File",
   "Status",
@@ -51,25 +53,41 @@ const REQUIRED_HEADERS = [
   "Commit",
 ] as const;
 
-const STATUS_ALIASES: Record<string, TrackerPhaseStatus> = {
-  pending: "Pending",
-  "in progress": "In Progress",
-  done: "Done",
-  complete: "Complete",
-};
+const FOUR_COLUMN_HEADERS = ["Phase", "File", "Status", "Commit"] as const;
 
-const PHASE_CELL_RE = /^(\d+)\s*(?:—|-)\s*(.+)$/;
+const HEADER_MISMATCH_MESSAGE =
+  "Tracker table must have exactly five columns: Phase | File | Status | Depends on | Commit";
+
+const STATUS_PREFIXES: { word: string; status: TrackerPhaseStatus }[] = [
+  { word: "in progress", status: "In Progress" },
+  { word: "pending", status: "Pending" },
+  { word: "done", status: "Done" },
+  { word: "complete", status: "Complete" },
+];
+
+// Accepted Phase cells: `1`, `1 — Title`, `1 - Title`, `1. Title`, `1: Title`,
+// `P0 — Title`, `Phase 2 — Title`. The number is what the pipeline keys on.
+const PHASE_CELL_RE =
+  /^(?:P(?:hase)?\s*)?(\d+)(?:\s*(?:—|–|-|\.|:|\))\s*(.*))?$/i;
 
 function normalizeStatus(raw: string): TrackerPhaseStatus {
-  const key = raw.trim().toLowerCase();
-  const mapped = STATUS_ALIASES[key];
-  if (!mapped) {
-    throw new RoadmapTrackerError(
-      "unknown-status",
-      `Unknown tracker status "${raw.trim()}"`
-    );
+  const trimmed = raw.trim();
+  const lower = trimmed.toLowerCase();
+
+  for (const { word, status } of STATUS_PREFIXES) {
+    if (lower === word) return status;
+    if (lower.startsWith(word)) {
+      const rest = trimmed.slice(word.length);
+      if (rest.length === 0) return status;
+      if (/^\s*(?:—|-|:|\()/.test(rest)) return status;
+      break;
+    }
   }
-  return mapped;
+
+  throw new RoadmapTrackerError(
+    "unknown-status",
+    `Unknown tracker status "${trimmed}"`
+  );
 }
 
 function parseDependsOn(raw: string): string[] {
@@ -78,38 +96,50 @@ function parseDependsOn(raw: string): string[] {
     return [];
   }
   const parts = trimmed.split(/[,;]/).map((p) => p.trim()).filter(Boolean);
+  const numbers: string[] = [];
   for (const part of parts) {
-    if (!/^\d+$/.test(part)) {
+    // Same prefixes the Phase cell accepts, so `P1` can depend on `P0`.
+    const match = /^(?:P(?:hase)?\s*)?(\d+)$/i.exec(part);
+    if (!match) {
       throw new RoadmapTrackerError(
         "malformed-dependency",
         `Malformed tracker dependency "${part}"`
       );
     }
+    numbers.push(match[1]!);
   }
-  return parts;
+  return numbers;
 }
 
-function parseHeaderRow(cells: string[]): void {
-  if (cells.length > REQUIRED_HEADERS.length) {
-    throw new RoadmapTrackerError(
-      "extra-header",
-      "Tracker table must have exactly five columns: Phase | File | Status | Depends on | Commit"
-    );
+type HeaderLayout = { columns: 4 | 5 };
+
+function headerCellMatches(actual: string, expected: string): boolean {
+  return actual.trim().toLowerCase() === expected.toLowerCase();
+}
+
+function parseHeaderRow(cells: string[]): HeaderLayout {
+  if (cells.length > FIVE_COLUMN_HEADERS.length) {
+    throw new RoadmapTrackerError("extra-header", HEADER_MISMATCH_MESSAGE);
   }
-  if (cells.length !== REQUIRED_HEADERS.length) {
-    throw new RoadmapTrackerError(
-      "misordered-header",
-      "Tracker table must have exactly five columns: Phase | File | Status | Depends on | Commit"
-    );
-  }
-  for (let i = 0; i < REQUIRED_HEADERS.length; i++) {
-    if (cells[i]!.trim() !== REQUIRED_HEADERS[i]) {
-      throw new RoadmapTrackerError(
-        "misordered-header",
-        "Tracker table must have exactly five columns: Phase | File | Status | Depends on | Commit"
-      );
+
+  const tryMatch = (
+    expected: readonly string[],
+    columns: 4 | 5
+  ): HeaderLayout | null => {
+    if (cells.length !== expected.length) return null;
+    for (let i = 0; i < expected.length; i++) {
+      if (!headerCellMatches(cells[i]!, expected[i]!)) return null;
     }
-  }
+    return { columns };
+  };
+
+  const five = tryMatch(FIVE_COLUMN_HEADERS, 5);
+  if (five) return five;
+
+  const four = tryMatch(FOUR_COLUMN_HEADERS, 4);
+  if (four) return four;
+
+  throw new RoadmapTrackerError("misordered-header", HEADER_MISMATCH_MESSAGE);
 }
 
 function isSeparatorRow(cells: string[]): boolean {
@@ -128,12 +158,11 @@ function extractLinkedFile(cell: string): string {
     }
     return href;
   }
+  // Legacy trackers leave the File cell blank or `—` for phases that never
+  // had a doc (often already Done). Read the row; the number is what matters.
   const trimmed = cell.trim();
   if (!trimmed || trimmed === "—" || trimmed === "-") {
-    throw new RoadmapTrackerError(
-      "missing-link",
-      "Tracker phase row is missing a linked file"
-    );
+    return "";
   }
   return trimmed;
 }
@@ -162,6 +191,7 @@ export function parseRoadmapTracker(markdown: string): ParsedRoadmapTracker {
   const lines = markdown.split(/\r?\n/);
   let headerFound = false;
   let pastSeparator = false;
+  let columnCount: 4 | 5 = 5;
   const phases: TrackerPhase[] = [];
   const seenNumbers = new Set<number>();
 
@@ -174,7 +204,7 @@ export function parseRoadmapTracker(markdown: string): ParsedRoadmapTracker {
     if (cells.length === 0) continue;
 
     if (!headerFound) {
-      parseHeaderRow(cells);
+      columnCount = parseHeaderRow(cells).columns;
       headerFound = true;
       continue;
     }
@@ -190,14 +220,14 @@ export function parseRoadmapTracker(markdown: string): ParsedRoadmapTracker {
       continue;
     }
 
-    if (cells.length !== REQUIRED_HEADERS.length) continue;
+    if (cells.length !== columnCount) continue;
     if (isSeparatorRow(cells)) continue;
 
     const phaseCell = cells[0]!;
     const phaseMatch = PHASE_CELL_RE.exec(phaseCell);
     if (!phaseMatch) {
       throw new RoadmapTrackerError(
-        "malformed-dependency",
+        "malformed-phase",
         `Malformed tracker phase cell "${phaseCell}"`
       );
     }
@@ -213,12 +243,14 @@ export function parseRoadmapTracker(markdown: string): ParsedRoadmapTracker {
 
     const file = extractLinkedFile(cells[1]!);
     const status = normalizeStatus(cells[2]!);
-    const dependsOn = parseDependsOn(cells[3]!);
-    const commit = cells[4]!.trim();
+    const dependsOn =
+      columnCount === 5 ? parseDependsOn(cells[3]!) : [];
+    const commit =
+      columnCount === 5 ? cells[4]!.trim() : cells[3]!.trim();
 
     phases.push({
       number,
-      title: phaseMatch[2]!.trim(),
+      title: phaseMatch[2]?.trim() ?? "",
       file,
       status,
       dependsOn,
