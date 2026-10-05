@@ -18,7 +18,16 @@ All daemon state lives under `~/.cursor-local-automations/`:
 
 **Timestamps:** the DB and all log *contents* are **UTC** (`runs.started_at` etc. via `datetime('now')`; `daemon.err.log` uses ISO `…Z`). Only OS file *mtimes* (`ls`, Explorer, `Get-ChildItem`) are local. So a cron `0 7 * * *` (7 AM local) appears everywhere in the DB and logs as `11:00:00` UTC — don't compare a file's local mtime to a UTC log line without converting.
 
-**First-line diagnosis:** `lca doctor <runId-or-chatId>` correlates a run or chat event timeline with the matching `daemon.err.log` window (auth failures often appear only in the log, with no id). `lca doctor` with no args prints daemon health, key presence, and recent failures. Prefer that over hand-written SQLite scripts.
+**First-line diagnosis:** bare `max doctor` (or `lca doctor`) prints an
+**Environment** block first (CLI Node vs required floor, npm, skill-copy drift
+from this checkout), then daemon health, a **Roadmaps** summary (one line per
+registered workspace), active/halted pipelines, and recent failures with short
+ids — then
+`max doctor <runId-or-chatId>` for the correlated event timeline and matching
+`daemon.err.log` window (auth failures often appear only in the log, with no id).
+For implement-fully supervision, prefer `max watch b42 --json` (or pass a root run id) and the
+pipeline snapshot over polling the board or hand-written SQLite. Prefer CLI
+diagnosis over probing `state.sqlite` directly.
 
 **Query a run ad hoc** — `runs.id` is a full UUID; match on the prefix you have:
 
@@ -26,6 +35,51 @@ All daemon state lives under `~/.cursor-local-automations/`:
 SELECT * FROM runs WHERE id LIKE '<prefix>%';
 SELECT seq, event_type, payload FROM run_events WHERE run_id = '<run-id>' ORDER BY seq;
 ```
+
+## Node runtime / bootstrap refusal
+
+Max refuses to start the CLI or daemon when the running Node is below the floor
+in root `package.json` `engines.node` (embedded at build as a fallback). The
+message names the required range, your running version, and points to Node 22 or
+24 LTS at https://nodejs.org/en/download — install a supported runtime, then
+re-run. Root `.npmrc` sets `engine-strict=true`, so `npm ci` also refuses on
+unsupported Node before install completes.
+
+`max update --apply` / `--dry-run` may refuse with **`node-floor`** when the
+*fetched target tag* requires a higher Node than this machine — read the printed
+**Upgrade actions** block and install Node locally; apply does not install Node
+for you.
+
+## Doctor Environment and skills drift
+
+Bare `max doctor` compares installed skill copies under `~/.cursor/skills/` to
+this checkout's bundled skills (`implement-fully`, `plan-implement-fully`,
+`max-setup`; `scripts/install-skill.mjs --check`). **Drift** means the on-disk
+copies differ — run `max skills install`. After upgrades, read the changelog
+**Upgrade actions** block; it may instruct a skills reinstall. Skills installed
+only through the Cursor GitHub plugin cache are **not** visible to this check
+(plugin-cache limitation). npm and skill probes degrade to unavailable when
+spawn fails; doctor still prints the rest.
+
+## Roadmap readiness (doctor)
+
+Readiness is computed in the daemon (`GET /api/workspaces/:id/roadmap-readiness`
+and `GET /api/roadmap-readiness` for summaries). The CLI does not read
+repository files for diagnosis.
+
+| Command | Purpose |
+| --- | --- |
+| `max doctor` | Roadmaps section — one line per workspace (`ready` / `empty` / `adoptable` + blocker counts) |
+| `max doctor <workspace>` | Full grouped report with fix lines and per-feature plans |
+| `max doctor -w <id>` | Same as targeted doctor; `-w` allows prefix workspace matching |
+| `max doctor --json -w <id>` | Typed report JSON; exit `1` on blockers |
+| `max doctor --report` | Redacted support bundle (versions, environment shape, roadmap codes/counts, pipeline/queue summaries) safe to paste into an issue |
+| `max roadmap fix [workspace]` | Fetch additive fix plan, show diff, confirm (`--yes` non-TTY), write locally |
+
+When the daemon is down, the Roadmaps section prints
+`(daemon not running — roadmap readiness unavailable; run max up)` rather than
+guessing from disk. Positional `max doctor <workspace>` uses exact id, name, or
+path-tail matching only; use `-w` when disambiguating.
 
 ## Daemon won't start
 
@@ -76,6 +130,32 @@ with the four settings. See [configuration](./configuration.md) for defaults and
 overrides.
 
 ## Runs
+
+### Pipeline snapshot and watch (implement-fully)
+
+1. **`max doctor`** — health, pipeline summary, recent failures (short ids).
+2. **`max watch b42 --until needs_input,halted,blocked,green --json`** (or a root run id) —
+   blocking snapshot + cursor; preserve `rootRunId` and `cursor` for the next turn.
+3. **`max doctor <runId>`** — per-run halt detail and the daemon-owned recovery
+   command (`max escalate …`, `max answer …`, etc.).
+4. **`max logs <runId>`** — full event tail when doctor's excerpt is not enough.
+
+Do **not** start from SQLite or transcript greps. Unknown or pruned `--since`
+cursors are valid lower bounds (not `404`).
+
+**Outcome vs halt vs timeout:** `snapshot.outcome: failed` with a non-null
+`halt.recoveryCommand` is a recoverable agent halt — run the printed command.
+`blocked` / `deadlock` are terminal coordinator outcomes. `max watch` exit code
+**14** is a client `--timeout`, not a pipeline failure. Exit code **1** is a
+runtime/daemon error.
+
+**Steering mistakes:** `max directive` does not reach the active step — use
+`max message` / `max interrupt`. `max pipeline-stop` refuses wave-track frontiers;
+use `lca wave <waveId> retry|abort`. `max stop` tears down the daemon.
+
+Contract details: [configuration](./configuration.md) § Pipeline snapshot, watch,
+and steering; [implement-fully protocol](./implement-fully-protocol.md) § Operator
+steering.
 
 ### Pause / resume (parked automations)
 
@@ -266,10 +346,10 @@ for the same feature). In `lca doctor` health output, look for
   (or register it in the dashboard), then retry. Do not invent a workspace row
   from an agent run.
 - **Kickoff refuses: exactly one of `--feature` / `--idea`** — use
-  `lca implement-fully --feature <bN>` for documented work or
+  `lca implement-fully --feature b42` (or `b-dm58`, …) for documented work or
   `lca implement-fully --idea "<text>"` for new work. Do not pass both, and do
   not pass `--slug` (removed). Confirm with
-  `lca implement-fully --feature <bN> --dry-run` (or `--idea` …) before a real
+  `lca implement-fully --feature b42 --dry-run` (or `--idea` …) before a real
   kickoff.
 - **Kickoff refuses: daemon resolve error** — missing feature, ambiguous or
   malformed roadmap metadata, or a stale next-id marker. Fix the roadmap index
@@ -297,7 +377,7 @@ for the same feature). In `lca doctor` health output, look for
   instead of rewriting the default map each run. Per-role gaps can also be filled
   with `--role <role>=<modelId>`. There is no silent fallback to the
   daemon’s default model for pipeline roles. Confirm with
-  `lca implement-fully --feature <bN> --dry-run` before a real kickoff.
+  `lca implement-fully --feature b42 --dry-run` before a real kickoff.
 - **Kickoff refuses: unknown `--role-profile`** — the id is not in the introspection
   catalog (`default` plus keys from `pipelineRoleModelProfiles`). The error lists
   valid ids. Fix the flag or add the profile in global YAML and `lca restart`.
@@ -323,21 +403,28 @@ for the same feature). In `lca doctor` health output, look for
 - **Serial implement-fully queue not moving** — the queue is **serial** (one active
   pipeline per workspace). Concurrent isolation is not shipped yet. Diagnose in order:
   1. **Bare `lca doctor`** — read the **Queue** line (`queued` / `running` /
-     `blocked` counts). Empty means no active batch.
+     `blocked` counts). Empty means no active batch. Direct kickoffs appear as
+     `running` with a `[direct]` tag (same slot as queue-owned rows).
   2. **`blocked` entries** — inspect `detail` on the row (`lca queue list` or
      `GET /api/feature-queue?workspaceId=…`). Dependents park one hop when an
      upstream feature `failed`; retrying the failed feature to a green
      `final-gate` re-queues rows it parked — `lca queue rm` a parked row first
      if it must not run (e.g. already run by hand).
-  3. **Active-pipeline guard** — if nothing starts but a non-queue implement-fully
-     run is still `queued` / `running` / `needs_input`, the slot is occupied.
-     Finish or cancel that run first (`lca queue add` intentionally skips this
-     guard at enqueue time only).
+  3. **Active-pipeline / direct slot** — if nothing starts, a `running` queue row
+     (including `origin: direct` from `lca implement-fully`) occupies the slot.
+     Finish it, or cancel the run with `lca cancel <runId>` (not `queue rm` for
+     running rows). Preview wording for a queue head waiting on direct-only
+     execution is **waiting for slot**, not **queue busy**.
   4. **`running` with no live worker** — expected between a green worker and the
      next spawn, and until `final-gate`. A Running card badged **Waiting for
      slot** is a `queued` run waiting for `maxConcurrentRuns`, usually the same
      pipeline's next step. Do not treat that as a failed feature.
      `lca queue add --dry-run` validates without enqueueing.
+  5. **`--after` unknown / duplicate** — dependencies must resolve to a queue row
+     (live direct, queue-owned, or lazy-adopted historical root). Truly unknown
+     ids keep `unknown dependency feature id: <id>`; an active row for the same
+     feature id is `409` duplicate. Direct rows never enter `queue_batch_complete`
+     digests.
 - **Parallel waves (implement-fully)** — start with bare `lca doctor`. Expect
   `tracks running`, `barrier wait`, `blocked waves`, and `cleanup required`. A
   run-specific Pipeline block may also show
@@ -413,10 +500,15 @@ a usable ntfy connection when `ntfy` is on for that event, and no
 - **`ux_approval_required` silence** — expected until a product UX/design gate
   producer exists; the id is catalog-reserved only (Notifier seam callable, no
   live park yet).
-- **Loud `pipeline_complete`** — defaults toast on and ntfy on; feature-end
-  silence usually means prefs turned off, ntfy unconfigured, `LCA_NO_NTFY`, or
-  the settling worker was not implement-fully `final-gate` (not a per-step
-  worker).
+- **Loud `pipeline_complete`** — defaults toast on and ntfy on; fires only when
+  implement-fully `final-gate` settles with `chain_stop_reason` starting
+  `complete:`. Feature-end silence usually means prefs turned off, ntfy
+  unconfigured, `LCA_NO_NTFY`, the worker was not `final-gate`, or the gate
+  stopped with `blocked:` / `deadlock:` / other reason (see `pipeline_blocked`
+  below).
+- **Loud `pipeline_blocked`** — defaults toast on and ntfy on; fires when
+  `final-gate` settles with `chain_stop_reason` starting `blocked:` or
+  `deadlock:`. A blocked gate should beep as blocked, not as pipeline complete.
 - **Server / token** — self-hosted or auth-required servers need a valid
   HTTP(S) `server` and optional `token`. Public `https://ntfy.sh` is the
   default when `server` is omitted.
@@ -509,6 +601,18 @@ a usable ntfy connection when `ntfy` is on for that event, and no
   `LCA_FORCE_STOP_DAEMONS=1`. After the daemon is back, a follow-up may briefly
   see `not found` while the SDK store settles; cold resume retries automatically
   before declaring the session stale.
+- **Isolated UI verify scripts leaked workspaces into the live daemon** — scripts that
+  static-import daemon dist before setting `HOME` / `USERPROFILE` / `LCA_HOME` bake
+  `GLOBAL_CONFIG_PATH` to the operator home at import time; `POST /api/workspaces`
+  then appends the live `automations.yaml` and the config watcher reconciles into live
+  `state.sqlite`. Set env vars **before** any daemon `import()`, use a temp home with
+  `LCA_HOME = join(testHome, ".cursor-local-automations")`, bind an own port (never
+  `:3747`), and assert isolation in the script. See `scripts/verify-b44.mjs` /
+  `scripts/verify-b78-ui.mjs`. Do **not** delete live `lca-b78-reg-*` rows from an
+  agent — operator cleanup: remove them in the dashboard sidebar, or with the daemon
+  stopped run `DELETE FROM workspaces WHERE path LIKE '%lca-b78-reg-%'` on live
+  `state.sqlite`, drop matching `workspaces:` entries from live `automations.yaml` if
+  they remain, then `max restart`.
 - **`Settings → About → Restart daemon` from the phone leaves it down / "restart failed"** — the
   daemon force-closes in-flight connections during teardown, so a phone's
   persistent `/ws` socket can't stall the relaunch. Before this, `server.close()`
@@ -519,6 +623,15 @@ a usable ntfy connection when `ntfy` is on for that event, and no
   now retries the bind for ~5s to ride out the outgoing daemon's socket release
   instead of dying fatally. A persistent EADDRINUSE past that means a genuine
   second daemon is running — stop it (`lca down`) or use a different `LCA_PORT`.
+- **Phone can't reach Max even though `lca status` says `remote: ON`, Tailscale
+  shows both devices, and the allowlist is right** — the daemon started before
+  Tailscale assigned its address (typical after a reboot / login autostart), the
+  `100.x` bind failed with `EADDRNOTAVAIL`, and the daemon degraded to loopback
+  only. `lca status` now says `remote: ON — NOT BOUND` and the `listening:` line
+  shows only `127.0.0.1` in that state; `daemon.err.log` has `Bind <host>:3747
+  failed (EADDRNOTAVAIL)`. The daemon retries the bind every 15s on its own and
+  logs `Bind <host>:3747 recovered` when it lands, so normally just wait for
+  Tailscale. If Tailscale is up and it still says NOT BOUND, `lca restart`.
 - **Diagnose** — `netstat -ano | findstr ":3747"`. Exactly one PID should be
   `LISTENING` (on loopback and the Tailscale host). Two daemon PIDs, or a flood
   of `TIME_WAIT` (the phone's WS reconnect loop hammering a dead listener),

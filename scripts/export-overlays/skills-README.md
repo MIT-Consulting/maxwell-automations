@@ -6,6 +6,14 @@ Logic. Tagged in lockstep with
 
 **Clones and forks welcome. Contributions are closed.**
 
+## Bundled skills
+
+| Skill | Purpose |
+| --- | --- |
+| `implement-fully` | Kick off the multi-run implement-fully pipeline (`/implement-fully`). |
+| `plan-implement-fully` | Deep/Guided planning contracts for implement-fully. |
+| `max-setup` | Register, upgrade, diagnose, and adopt workspaces via CLI output. |
+
 ## Install
 
 1. **Cursor plugin** — import this GitHub repository as a plugin (auto-refresh on push).

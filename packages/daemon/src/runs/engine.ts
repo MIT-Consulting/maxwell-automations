@@ -25,6 +25,7 @@ import {
   type PipelineHaltDiscoveryActionResultPayload,
   type RunEscalationRequest,
   type RunStatus,
+  withActorIdPayload,
 } from "@lca/shared";
 import {
   escalateRun as performEscalation,
@@ -46,6 +47,7 @@ import {
 } from "./halt-discovery-promotion.js";
 import { parseInputMetadataJson } from "../input/store.js";
 import type { ChatEngine } from "../chats/engine.js";
+import { isGeneratedConfigKey } from "../config/generated-workers.js";
 import type { LcaDatabase } from "../db/index.js";
 import { renderChainTemplate } from "./chain-template.js";
 import { resolvePromptReferences } from "../artifacts/resolve.js";
@@ -623,6 +625,17 @@ export class RunEngine {
       );
     }
 
+    if (
+      triggerKind === "manual" &&
+      isGeneratedConfigKey(automation.config_key) &&
+      options?.chainContext == null
+    ) {
+      throw new TriggerRunValidationError(
+        "Pipeline workers cannot be started manually without chain context. " +
+          "Use max implement-fully or lca implement-fully."
+      );
+    }
+
     const runId = randomUUID();
     const parentRunId = options?.parentRunId ?? null;
     let chainContext = options?.chainContext ?? null;
@@ -1106,7 +1119,7 @@ export class RunEngine {
     return orphans.length;
   }
 
-  async cancelRun(runId: string): Promise<void> {
+  async cancelRun(runId: string, actorId?: string): Promise<void> {
     const row = this.store.getRun(runId);
     if (!row) {
       throw new Error(`Run not found: ${runId}`);
@@ -1114,6 +1127,11 @@ export class RunEngine {
 
     if (row.status === "queued") {
       this.store.cancelAllPendingQueuedMessages(runId);
+      this.store.appendEvent(
+        runId,
+        "run.cancelled",
+        withActorIdPayload({ reason: "operator" }, actorId)
+      );
       this.transition(runId, "queued", "cancelled");
       return;
     }
@@ -1122,6 +1140,11 @@ export class RunEngine {
       throw new Error(`Run ${runId} cannot be cancelled from status ${row.status}`);
     }
 
+    this.store.appendEvent(
+      runId,
+      "run.cancelled",
+      withActorIdPayload({ reason: "operator" }, actorId)
+    );
     this.pendingInterrupts.delete(runId);
     this.options.inputHub.cancelWaitersForRun(runId);
     this.store.cancelAllPendingQueuedMessages(runId);
@@ -1228,7 +1251,11 @@ export class RunEngine {
    * Halt-discovery briefing cards escalate the source once, then close the
    * advisory without delivering to MCP/SDK waiters or follow-up.
    */
-  async submitAnswer(runId: string, answer: string): Promise<void> {
+  async submitAnswer(
+    runId: string,
+    answer: string,
+    actorId?: string
+  ): Promise<void> {
     const row = this.store.getRun(runId);
     if (!row) {
       throw new Error(`Run not found: ${runId}`);
@@ -1246,7 +1273,11 @@ export class RunEngine {
     this.options.inputHub.submitAnswer(runId, answer);
 
     if (hadMcpWaiter) {
-      this.store.appendEvent(runId, "input.delivered", { answer });
+      this.store.appendEvent(
+        runId,
+        "input.delivered",
+        withActorIdPayload({ answer }, actorId)
+      );
     } else {
       const waiter = this.answerWaiters.get(runId);
       if (waiter) {
@@ -1360,7 +1391,8 @@ export class RunEngine {
   async queueMessage(
     runId: string,
     text: string,
-    attachmentRefs?: AttachmentRef[]
+    attachmentRefs?: AttachmentRef[],
+    actorId?: string
   ): Promise<string> {
     const attachments = resolveOperatorAttachments(
       this.attachments,
@@ -1414,19 +1446,27 @@ export class RunEngine {
       trimmed,
       serializeAttachmentRefs(refs)
     );
-    this.store.appendEvent(runId, "run.message.queued", {
-      role: "user",
-      text: trimmed,
-      queuedMessageId,
-      ...(refs.length > 0 ? { attachments: refs } : {}),
-    });
+    this.store.appendEvent(
+      runId,
+      "run.message.queued",
+      withActorIdPayload(
+        {
+          role: "user",
+          text: trimmed,
+          queuedMessageId,
+          ...(refs.length > 0 ? { attachments: refs } : {}),
+        },
+        actorId
+      )
+    );
     return queuedMessageId;
   }
 
   async interruptRun(
     runId: string,
     text: string,
-    attachmentRefs?: AttachmentRef[]
+    attachmentRefs?: AttachmentRef[],
+    actorId?: string
   ): Promise<void> {
     const attachments = resolveOperatorAttachments(
       this.attachments,
@@ -1468,7 +1508,7 @@ export class RunEngine {
       row.status === "failed" ||
       row.status === "cancelled"
     ) {
-      await this.sendMessage(runId, trimmed, attachmentRefs);
+      await this.sendMessage(runId, trimmed, attachmentRefs, actorId);
       return;
     }
 
@@ -1479,11 +1519,18 @@ export class RunEngine {
       );
     }
 
-    this.store.appendEvent(runId, "run.interrupted", {
-      role: "user",
-      text: trimmed,
-      ...(refs.length > 0 ? { attachments: refs } : {}),
-    });
+    this.store.appendEvent(
+      runId,
+      "run.interrupted",
+      withActorIdPayload(
+        {
+          role: "user",
+          text: trimmed,
+          ...(refs.length > 0 ? { attachments: refs } : {}),
+        },
+        actorId
+      )
+    );
     this.pendingInterrupts.set(
       runId,
       buildOperatorMessage(trimmed, attachments)
@@ -1503,7 +1550,7 @@ export class RunEngine {
     }
   }
 
-  async pauseRun(runId: string): Promise<void> {
+  async pauseRun(runId: string, actorId?: string): Promise<void> {
     const row = this.store.getRun(runId);
     if (!row) {
       throw new RunMessageError("not_found", `Run not found: ${runId}`);
@@ -1521,7 +1568,11 @@ export class RunEngine {
       );
     }
 
-    this.store.appendEvent(runId, "run.paused", { reason: "operator" });
+    this.store.appendEvent(
+      runId,
+      "run.paused",
+      withActorIdPayload({ reason: "operator" }, actorId)
+    );
     this.pendingInterrupts.delete(runId);
     this.options.inputHub.cancelWaitersForRun(runId);
     const controller = this.inFlight.get(runId);
@@ -1536,7 +1587,7 @@ export class RunEngine {
     this.transition(runId, "running", "paused");
   }
 
-  async resumeRun(runId: string, note?: string): Promise<void> {
+  async resumeRun(runId: string, note?: string, actorId?: string): Promise<void> {
     const row = this.store.getRun(runId);
     if (!row) {
       throw new RunMessageError("not_found", `Run not found: ${runId}`);
@@ -1557,14 +1608,19 @@ export class RunEngine {
       prompt = `${prompt}\n\nOperator note:\n${trimmedNote}`;
     }
 
-    this.store.appendEvent(runId, "run.pause.resumed", {});
-    this.startFollowUp(runId, prompt, row);
+    this.store.appendEvent(
+      runId,
+      "run.pause.resumed",
+      withActorIdPayload({}, actorId)
+    );
+    this.startFollowUp(runId, prompt, row, { actorId });
   }
 
   async sendMessage(
     runId: string,
     text: string,
-    attachmentRefs?: AttachmentRef[]
+    attachmentRefs?: AttachmentRef[],
+    actorId?: string
   ): Promise<void> {
     const attachments = resolveOperatorAttachments(
       this.attachments,
@@ -1597,7 +1653,9 @@ export class RunEngine {
       runId,
       buildOperatorMessage(text.trim(), attachments),
       row,
-      row.status === "paused" ? { keepPaused: true } : undefined
+      row.status === "paused"
+        ? { keepPaused: true, actorId }
+        : { actorId }
     );
   }
 
@@ -1610,7 +1668,7 @@ export class RunEngine {
     runId: string,
     message: string | OperatorMessage,
     rowOverride?: RunRow,
-    options?: { keepPaused?: boolean }
+    options?: { keepPaused?: boolean; actorId?: string }
   ): void {
     const row = rowOverride ?? this.store.getRun(runId);
     if (!row) {
@@ -1646,11 +1704,18 @@ export class RunEngine {
       operatorMessage.attachments ?? []
     );
 
-    const seq = this.store.appendEvent(runId, "run.message", {
-      role: "user",
-      text,
-      ...(attachmentMeta.length > 0 ? { attachments: attachmentMeta } : {}),
-    });
+    const seq = this.store.appendEvent(
+      runId,
+      "run.message",
+      withActorIdPayload(
+        {
+          role: "user",
+          text,
+          ...(attachmentMeta.length > 0 ? { attachments: attachmentMeta } : {}),
+        },
+        options?.actorId
+      )
+    );
     if (attachmentMeta.length > 0) {
       this.attachments.associateWithMessageSeq(
         "run",
@@ -1884,6 +1949,40 @@ export class RunEngine {
       this.log(`Run ${runId}: chain-control ${parts.join(", ")}`);
     }
 
+    return { ok: true, response: result.response };
+  }
+
+  /**
+   * Operator stop-after-step on a pipeline frontier. No run token; does not emit
+   * `run.chain-control` (pipeline-level `run.pipeline-stop-requested` is separate).
+   */
+  applyOperatorPipelineStop(
+    runId: string,
+    reason: string
+  ):
+    | { ok: true; response: ChainControlResponse }
+    | {
+        ok: false;
+        reason:
+          | "not-found"
+          | "terminal"
+          | "already-stopped"
+          | "rebudget-conflict"
+          | "extend-conflict"
+          | "no-budget-context";
+      } {
+    const before = this.store.getRun(runId);
+    if (!before) {
+      return { ok: false, reason: "not-found" };
+    }
+    if (before.chain_stop_requested_at != null) {
+      return { ok: false, reason: "already-stopped" };
+    }
+    const result = this.store.applyChainControl(runId, { stop: { reason } });
+    if (!result.ok) {
+      return result;
+    }
+    this.log(`Run ${runId}: operator pipeline stop (${reason})`);
     return { ok: true, response: result.response };
   }
 

@@ -146,6 +146,7 @@ function stubRun(overrides: Partial<RunRow> = {}): RunRow {
     parent_run_id: null,
     chain_depth: null,
     chain_context_json: null,
+    chain_stop_reason: null,
     title: null,
     summary: null,
     created_at: "2026-01-01 00:00:00",
@@ -379,13 +380,16 @@ describe("b52 phase 2 — engine settle hooks", () => {
       notifier?: {
         runCompleted: ReturnType<typeof vi.fn>;
         pipelineComplete: ReturnType<typeof vi.fn>;
+        pipelineBlocked: ReturnType<typeof vi.fn>;
       };
     }) {
       const runCompleted = input.notifier?.runCompleted ?? vi.fn();
       const pipelineComplete = input.notifier?.pipelineComplete ?? vi.fn();
+      const pipelineBlocked = input.notifier?.pipelineBlocked ?? vi.fn();
       return {
         runCompleted,
         pipelineComplete,
+        pipelineBlocked,
         deps: {
           getRun: (id: string) =>
             input.run && input.run.id === id ? input.run : undefined,
@@ -394,7 +398,7 @@ describe("b52 phase 2 — engine settle hooks", () => {
               ? input.automation
               : undefined,
           parseChainContext: input.parseChainContext,
-          notifier: { runCompleted, pipelineComplete },
+          notifier: { runCompleted, pipelineComplete, pipelineBlocked },
         },
       };
     }
@@ -402,23 +406,33 @@ describe("b52 phase 2 — engine settle hooks", () => {
     it("calls runCompleted once for an ordinary automation", () => {
       const run = stubRun();
       const automation = stubAutomation({ name: "Daily lint" });
-      const { deps, runCompleted, pipelineComplete } = makeDeps({ run, automation });
+      const { deps, runCompleted, pipelineComplete, pipelineBlocked } = makeDeps({
+        run,
+        automation,
+      });
 
       notifyOnRunCompleted(run.id, deps);
 
       expect(runCompleted).toHaveBeenCalledTimes(1);
       expect(runCompleted).toHaveBeenCalledWith(run.id, "Daily lint");
       expect(pipelineComplete).not.toHaveBeenCalled();
+      expect(pipelineBlocked).not.toHaveBeenCalled();
     });
 
-    it("calls both methods for implement-fully final-gate worker", () => {
-      const run = stubRun({ automation_id: "fg" });
+    it("calls runCompleted and pipelineComplete for final-gate with complete: stop reason", () => {
+      const run = stubRun({
+        automation_id: "fg",
+        chain_stop_reason: "complete:all phases done",
+      });
       const automation = stubAutomation({
         id: "fg",
         name: "Final gate",
         config_key: `${GENERATED_CONFIG_KEY_PREFIX}${IMPLEMENT_FULLY_FINAL_GATE_WORKER_KEY}`,
       });
-      const { deps, runCompleted, pipelineComplete } = makeDeps({ run, automation });
+      const { deps, runCompleted, pipelineComplete, pipelineBlocked } = makeDeps({
+        run,
+        automation,
+      });
 
       notifyOnRunCompleted(run.id, deps);
 
@@ -426,7 +440,65 @@ describe("b52 phase 2 — engine settle hooks", () => {
       expect(runCompleted).toHaveBeenCalledWith(run.id, "Final gate");
       expect(pipelineComplete).toHaveBeenCalledTimes(1);
       expect(pipelineComplete).toHaveBeenCalledWith(run.id, "Final gate");
+      expect(pipelineBlocked).not.toHaveBeenCalled();
     });
+
+    it.each([
+      ["blocked:review failed", "blocked:review failed"],
+      ["deadlock:wave stuck", "deadlock:wave stuck"],
+    ] as const)(
+      "calls pipelineBlocked once for final-gate with %s stop reason",
+      (_label, stopReason) => {
+        const run = stubRun({
+          automation_id: "fg",
+          chain_stop_reason: stopReason,
+        });
+        const automation = stubAutomation({
+          id: "fg",
+          name: "Final gate",
+          config_key: `${GENERATED_CONFIG_KEY_PREFIX}${IMPLEMENT_FULLY_FINAL_GATE_WORKER_KEY}`,
+        });
+        const { deps, runCompleted, pipelineComplete, pipelineBlocked } = makeDeps({
+          run,
+          automation,
+        });
+
+        notifyOnRunCompleted(run.id, deps);
+
+        expect(runCompleted).toHaveBeenCalledTimes(1);
+        expect(pipelineComplete).not.toHaveBeenCalled();
+        expect(pipelineBlocked).toHaveBeenCalledTimes(1);
+        expect(pipelineBlocked).toHaveBeenCalledWith(run.id, "Final gate");
+      }
+    );
+
+    it.each([
+      ["missing stop reason", null],
+      ["empty stop reason", ""],
+      ["abort stop reason", "abort:operator cancelled"],
+    ] as const)(
+      "fires neither loud pipeline alert for final-gate with %s",
+      (_label, stopReason) => {
+        const run = stubRun({
+          automation_id: "fg",
+          chain_stop_reason: stopReason,
+        });
+        const automation = stubAutomation({
+          id: "fg",
+          name: "Final gate",
+          config_key: `${GENERATED_CONFIG_KEY_PREFIX}${IMPLEMENT_FULLY_FINAL_GATE_WORKER_KEY}`,
+        });
+        const { deps, pipelineComplete, pipelineBlocked } = makeDeps({
+          run,
+          automation,
+        });
+
+        notifyOnRunCompleted(run.id, deps);
+
+        expect(pipelineComplete).not.toHaveBeenCalled();
+        expect(pipelineBlocked).not.toHaveBeenCalled();
+      }
+    );
 
     it("defers to the richer phase-completed toast for implement-fully context-aware workers", () => {
       const run = stubRun({
@@ -449,7 +521,7 @@ describe("b52 phase 2 — engine settle hooks", () => {
           ok: true,
           context: JSON.parse(row.chain_context_json!),
         }) as ParsedChainContext;
-      const { deps, runCompleted, pipelineComplete } = makeDeps({
+      const { deps, runCompleted, pipelineComplete, pipelineBlocked } = makeDeps({
         run,
         automation,
         parseChainContext,
@@ -459,6 +531,7 @@ describe("b52 phase 2 — engine settle hooks", () => {
 
       expect(runCompleted).not.toHaveBeenCalled();
       expect(pipelineComplete).not.toHaveBeenCalled();
+      expect(pipelineBlocked).not.toHaveBeenCalled();
     });
 
     it("does not defer when parseChainContext is unavailable, even for a context-aware run", () => {
@@ -495,35 +568,43 @@ describe("b52 phase 2 — engine settle hooks", () => {
         name: "",
         config_key: configKey,
       });
-      const { deps, runCompleted, pipelineComplete } = makeDeps({ run, automation });
+      const { deps, runCompleted, pipelineComplete, pipelineBlocked } = makeDeps({
+        run,
+        automation,
+      });
 
       notifyOnRunCompleted(run.id, deps);
 
       expect(runCompleted).toHaveBeenCalledTimes(1);
       expect(runCompleted).toHaveBeenCalledWith(run.id, _label);
       expect(pipelineComplete).not.toHaveBeenCalled();
+      expect(pipelineBlocked).not.toHaveBeenCalled();
     });
 
     it("no-ops when the run is missing", () => {
-      const { deps, runCompleted, pipelineComplete } = makeDeps({});
+      const { deps, runCompleted, pipelineComplete, pipelineBlocked } = makeDeps({});
       notifyOnRunCompleted("missing-run", deps);
       expect(runCompleted).not.toHaveBeenCalled();
       expect(pipelineComplete).not.toHaveBeenCalled();
+      expect(pipelineBlocked).not.toHaveBeenCalled();
     });
 
     it("calls unlabeled runCompleted when automation is missing", () => {
       const run = stubRun();
-      const { deps, runCompleted, pipelineComplete } = makeDeps({ run });
+      const { deps, runCompleted, pipelineComplete, pipelineBlocked } = makeDeps({
+        run,
+      });
 
       notifyOnRunCompleted(run.id, deps);
 
       expect(runCompleted).toHaveBeenCalledTimes(1);
       expect(runCompleted).toHaveBeenCalledWith(run.id, undefined);
       expect(pipelineComplete).not.toHaveBeenCalled();
+      expect(pipelineBlocked).not.toHaveBeenCalled();
     });
 
     it("does not throw when notifier methods throw", () => {
-      const run = stubRun();
+      const run = stubRun({ chain_stop_reason: "complete:ok" });
       const automation = stubAutomation({
         config_key: `${GENERATED_CONFIG_KEY_PREFIX}${IMPLEMENT_FULLY_FINAL_GATE_WORKER_KEY}`,
       });
@@ -533,15 +614,19 @@ describe("b52 phase 2 — engine settle hooks", () => {
       const pipelineComplete = vi.fn(() => {
         throw new Error("pipelineComplete failed");
       });
+      const pipelineBlocked = vi.fn(() => {
+        throw new Error("pipelineBlocked failed");
+      });
       const deps = {
         getRun: () => run,
         getAutomation: () => automation,
-        notifier: { runCompleted, pipelineComplete },
+        notifier: { runCompleted, pipelineComplete, pipelineBlocked },
       };
 
       expect(() => notifyOnRunCompleted(run.id, deps)).not.toThrow();
       expect(runCompleted).toHaveBeenCalledTimes(1);
       expect(pipelineComplete).toHaveBeenCalledTimes(1);
+      expect(pipelineBlocked).not.toHaveBeenCalled();
     });
   });
 });

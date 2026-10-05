@@ -27,6 +27,40 @@ export function isRemoteEnabled(cfg: NetworkConfig): boolean {
   return cfg.host !== LOOPBACK_HOST && cfg.host !== "::1";
 }
 
+/** The slice of `/api/status` that describes what the daemon is actually bound to. */
+export type LiveBindStatus = {
+  host: string;
+  bindAddresses: readonly string[];
+  /** Absent on daemons older than the live-bind report. */
+  unboundHosts?: readonly string[];
+};
+
+/**
+ * Pure: is the configured remote host actually listening right now? Remote can
+ * be configured ("ON") while the daemon only serves loopback — a Tailscale IP
+ * that wasn't assigned at boot degrades the bind and is retried in the
+ * background. Falls back to comparing `host` against `bindAddresses` when the
+ * daemon predates `unboundHosts`.
+ */
+export function describeRemoteBinding(status: LiveBindStatus): {
+  remoteOn: boolean;
+  hostBound: boolean;
+  unboundHosts: string[];
+} {
+  const remoteOn = isRemoteEnabled({ host: status.host, allowedIps: [] });
+  const unbound =
+    status.unboundHosts !== undefined
+      ? [...status.unboundHosts]
+      : status.bindAddresses.includes(status.host)
+        ? []
+        : [status.host];
+  return {
+    remoteOn,
+    hostBound: !remoteOn || !unbound.includes(status.host),
+    unboundHosts: unbound,
+  };
+}
+
 /**
  * Validate an IPv4 (incl. Tailscale CGNAT) or loose IPv6 literal. Keeps obvious
  * typos out of the allowlist, where a wrong entry silently locks a device out.

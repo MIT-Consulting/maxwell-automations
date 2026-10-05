@@ -362,6 +362,28 @@ export class Notifier {
     this.publishNtfy("pipeline_complete", title, message, runId);
   }
 
+  /** Loud pipeline blocked/deadlock — OS toast plus prefs-gated ntfy. */
+  pipelineBlocked(runId: string, label?: string): void {
+    const shortId = runId.slice(0, 8);
+    const trimmedLabel = label?.trim();
+    const title = "Max pipeline blocked";
+    const message = truncateMessage(
+      trimmedLabel && trimmedLabel.length > 0
+        ? `${trimmedLabel} blocked (${shortId})`
+        : `Pipeline blocked (${shortId})`,
+      220
+    );
+    const deepLink = buildRunDeepLink(this.options.dashboardUrl, runId);
+    this.notifyToast(
+      "pipeline_blocked",
+      `run ${runId}`,
+      title,
+      message,
+      deepLink
+    );
+    this.publishNtfy("pipeline_blocked", title, message, runId);
+  }
+
   /** Loud serial queue drain — OS toast plus prefs-gated ntfy (one per batch). */
   queueBatchComplete(facts: {
     workspaceLabel: string;

@@ -30,9 +30,12 @@ stable implementation-facing names for the same product.
   (UTC timestamps). Operator docs: `docs/troubleshooting.md`.
 - **Runtime orientation (agents):** do **not** probe `state.sqlite`, invent SQL, or
   grep transcripts to find “the latest X” / what’s running / a halt. Prefer owned
-  CLI first: bare `lca doctor` (Pipelines + Recent failures with short ids) →
-  `lca doctor <id>`; `lca status`; `lca list`; `/lca-dev runs`. Hand-written SQLite
-  only when those cannot answer. Details in the `lca-dev` skill.
+  CLI first: bare `lca doctor` (Environment: Node/npm/skills drift, then Roadmaps +
+  Pipelines + Recent failures with short ids) → `lca doctor <id>`; `max doctor --report`
+  for pasteable support bundles; `max roadmap fix` for additive index repairs; `lca status`;
+  `lca list`;
+  `/lca-dev runs`. Hand-written SQLite only when those cannot answer. Details in
+  the `lca-dev` skill.
 
 ## Triggers
 - `node-cron` (schedules), git hooks (post-commit/push/merge → localhost POST),
@@ -73,6 +76,10 @@ stable implementation-facing names for the same product.
 - `LCA_NO_TOAST=1` / `LCA_NO_NTFY=1` remain process-level hard mutes.
 
 ## Agent Doc Router
+- **Setup / register / adopt / upgrade:** root `AGENTS.md` (pre-install in this
+  checkout) and the user-level `max-setup` skill (`max skills install`). Kickoff
+  agents stop on unregistered workspaces — `max-setup` owns registration, not
+  ambient implementation.
 - **Feature status / recent shipped work:** `docs/roadmap/00-index.md` is canonical;
   do not infer status from README blurbs or an unarchived feature folder.
 - **Role-model recipes / `--role-profile`:** `docs/configuration.md`
@@ -84,8 +91,18 @@ stable implementation-facing names for the same product.
 - **Alerts / toast / ntfy:** `docs/configuration.md` § Phone notify; live surface is
   dashboard **Settings → Alerts**.
 - **Runtime failures / halts / waves:** use the `lca-dev` skill and `lca doctor`
-  before `docs/troubleshooting.md`.
+  before `docs/troubleshooting.md`. Bootstrap Node refusal and `node-floor` on
+  apply use `formatNodeFloorRefusal` (22/24 LTS + download URL) — do not duplicate
+  the numeric floor as a second source; read `engines.node` / embed.
+- **Public release / Upgrade actions:** `npm run release:preflight` and export
+  dry-run gate the fixed `### Upgrade actions` contract; see
+  `.cursor/skills/max-publish-public/SKILL.md`.
 - **Implement-fully loop / tracker ownership / final gate:** `docs/implement-fully-protocol.md`.
+- **Roadmap id format / index contract:** `docs/roadmap-format.md` (default accepts
+  `b<n>` and `b-<owner><n>` without a declaration). Format errors must say what is
+  wrong, give the exact fix, and point to that doc; preserve stable message prefixes
+  (`featureId must match`, `Invalid --feature`, `Invalid --slug`, `must start with
+  "<id>-"`) where tests and clients rely on them.
 
 ## Conventions
 - Daemon is the single source of truth and lifecycle owner.

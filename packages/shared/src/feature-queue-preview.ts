@@ -116,7 +116,10 @@ export function selectQueuePreview(input: {
     )
     .sort((a, b) => a.position - b.position);
 
-  const anyRunning = entries.some((entry) => entry.state === "running");
+  const runningEntries = entries.filter((entry) => entry.state === "running");
+  const anyRunning = runningEntries.length > 0;
+  const allRunningAreDirect =
+    anyRunning && runningEntries.every((entry) => entry.origin === "direct");
 
   const items: QueuePreviewItem[] = [];
   let headFeatureId: string | null = null;
@@ -163,13 +166,13 @@ export function selectQueuePreview(input: {
 
     if (headFeatureId === null) {
       headFeatureId = entry.featureId;
-      if (anyRunning) {
+      if (anyRunning && !allRunningAreDirect) {
         items.push({
           ...base,
           readiness: "waiting",
           reason: "queue busy",
         });
-      } else if (slotBusy) {
+      } else if (anyRunning || slotBusy) {
         items.push({
           ...base,
           readiness: "waiting",

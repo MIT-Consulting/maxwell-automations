@@ -60,7 +60,7 @@ const MODEL_PARAM_SYNTAX_MARKERS = [
 const GUARD_RUN_LIMIT = 500;
 
 const THIN_USAGE =
-  "Usage: lca implement-fully --feature <bN> [options]\n" +
+  "Usage: lca implement-fully --feature <feature-id> [options]\n" +
   "       lca implement-fully --idea <text> [options]";
 
 const VALID_FLAGS = [
@@ -140,7 +140,7 @@ export function parseImplementFullyArgs(args: string[]): ImplementFullyArgs {
     if (arg === "--feature") {
       featureId = args[++i];
       if (!featureId) {
-        throw new DaemonError("--feature requires a value (e.g. b42)");
+        throw new DaemonError("--feature requires a value (e.g. b42, b-dm58)");
       }
       sawFeature = true;
       continue;
@@ -232,12 +232,12 @@ export function parseImplementFullyArgs(args: string[]): ImplementFullyArgs {
 
   if (sawFeature && sawIdea) {
     throw new DaemonError(
-      `Provide exactly one of --feature <bN> or --idea <text>, not both.\n${THIN_USAGE}`
+      `Provide exactly one of --feature <feature-id> or --idea <text>, not both.\n${THIN_USAGE}`
     );
   }
   if (!sawFeature && !sawIdea) {
     throw new DaemonError(
-      `Exactly one of --feature <bN> or --idea <text> is required.\n${THIN_USAGE}`
+      `Exactly one of --feature <feature-id> or --idea <text> is required.\n${THIN_USAGE}`
     );
   }
 
@@ -514,7 +514,7 @@ export async function buildImplementFullyKickoff(
     parsed.researchApprovalPolicy ??
     options?.researchApprovalPolicy ??
     "none";
-  const variables = buildKickoffVariables(
+  let variables = buildKickoffVariables(
     resolved.featureId,
     resolved.featureSlug,
     resolved.idea,
@@ -525,6 +525,13 @@ export async function buildImplementFullyKickoff(
 
   const introspection = await client.getPipeline(IMPLEMENT_FULLY_PIPELINE_ID);
   assertVariablesMatchRequired(variables, introspection.requiredVariables);
+
+  if (parsed.roleProfile) {
+    variables = {
+      ...variables,
+      roleModelProfileId: parsed.roleProfile,
+    };
+  }
 
   const requiredRoles = introspection.roleContract.required;
   let baseRoleDefaults;

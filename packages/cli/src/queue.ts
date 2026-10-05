@@ -14,7 +14,7 @@ import {
 } from "./implement-fully.js";
 
 const QUEUE_USAGE =
-  "Usage: lca queue add --feature <bN> [options]\n" +
+  "Usage: lca queue add --feature <feature-id> [options]\n" +
   "       lca queue add --idea <text> [options]\n" +
   "       lca queue list | rm <id> | clear";
 
@@ -67,12 +67,17 @@ function formatShortRunId(runId: string | null): string {
   return runId ? runId.slice(0, 8) : "—";
 }
 
+function formatOriginTag(entry: FeatureQueueEntry): string {
+  return entry.origin === "direct" ? "[direct] " : "";
+}
+
 function printQueueEntry(entry: FeatureQueueEntry): void {
+  const detail = `${formatOriginTag(entry)}${entry.detail ?? ""}`.trim();
   console.log(
     `  ${entry.state.padEnd(12)} ${entry.featureId.padEnd(8)} ` +
       `${formatDependencies(entry.after).padEnd(16)} ` +
       `${formatShortRunId(entry.runId).padEnd(8)} ` +
-      `${entry.detail ?? ""}`
+      detail
   );
 }
 

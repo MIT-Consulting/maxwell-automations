@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./node-floor": {
+      "types": "./dist/node-floor.d.ts",
+      "import": "./dist/node-floor.js"
     }
   },
   "scripts": {

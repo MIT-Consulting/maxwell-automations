@@ -27,6 +27,10 @@ import {
   renderChainTemplate,
 } from "./chain-template.js";
 import {
+  appendOperatorDirectivesBlock,
+  mergeDirectiveRoleOverrides,
+} from "./pipeline-directive-render.js";
+import {
   extractImplementFullyHandoff,
   handoffFallbackBody,
   isImplementFullyContext,
@@ -336,7 +340,12 @@ export function buildChainedPromptOverride(
 --- chained from ${sourceAutomationName} (run ${sourceRunId}, status ${status}) ---
 ${body}`;
 
-  const limited = assertPromptWithinByteLimit(composed);
+  const sourceRow = store.getRun(sourceRunId);
+  const rootRunId = sourceRow?.chain_root_run_id ?? sourceRunId;
+  const directives = store.listPipelineDirectives(rootRunId);
+  const withDirectives = appendOperatorDirectivesBlock(composed, directives);
+
+  const limited = assertPromptWithinByteLimit(withDirectives);
   if (!limited.ok) {
     return {
       ok: false,
@@ -347,7 +356,7 @@ ${body}`;
 
   return {
     ok: true,
-    promptOverride: composed,
+    promptOverride: withDirectives,
   };
 }
 
@@ -1097,8 +1106,14 @@ export class ChainRunner {
         }
       }
 
+      let roleContext = chainContext;
+      if (roleContext && chainRootRunId) {
+        const directives = this.store.listPipelineDirectives(chainRootRunId);
+        roleContext = mergeDirectiveRoleOverrides(roleContext, directives);
+      }
+
       const { modelRole, modelRoleResolved, modelSelectionOverride } =
-        resolveChildModelRole(contextAware, chainContext, target, (msg) =>
+        resolveChildModelRole(contextAware, roleContext, target, (msg) =>
           this.onLog(msg)
         );
 

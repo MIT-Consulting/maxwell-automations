@@ -1,20 +1,44 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, normalize, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   PUBLIC_GIT_IDENTITY,
+  exportPublic,
   isIncluded,
   pinPublicGitIdentity,
   scanLeaks,
   transformContent,
 } from "../scripts/export-public.mjs";
+import { runReleasePreflight } from "../scripts/release-preflight.mjs";
 import { initRoadmap, roadmapIndexPath } from "../packages/cli/src/roadmap.ts";
 import { DaemonError } from "../packages/cli/src/client.ts";
 
+const TEST_DIR = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = join(TEST_DIR, "..");
+const AGENTS_MD = join(REPO_ROOT, "AGENTS.md");
+
+/** Relative markdown link targets in body text (ignores headings and http URLs). */
+function markdownRelativeLinks(body: string): string[] {
+  const links: string[] = [];
+  const re = /\[[^\]]*\]\(([^)]+)\)/g;
+  for (const match of body.matchAll(re)) {
+    const target = (match[1] ?? "").trim();
+    if (!target || /^https?:\/\//i.test(target) || target.startsWith("#")) {
+      continue;
+    }
+    const pathPart = target.split("#")[0]!.split("?")[0]!;
+    if (pathPart) links.push(pathPart);
+  }
+  return links;
+}
+
 describe("export allowlist", () => {
   it("includes public docs and packages, excludes the private roadmap", () => {
+    expect(isIncluded("AGENTS.md")).toBe(true);
+    expect(isIncluded(".npmrc")).toBe(true);
     expect(isIncluded("docs/brand.md")).toBe(true);
     expect(isIncluded("docs/roadmap-format.md")).toBe(true);
     expect(isIncluded("docs/forking.md")).toBe(true);
@@ -115,6 +139,57 @@ describe("export git identity", () => {
       expect(pinPublicGitIdentity(dir)).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("export release preflight gate", () => {
+  it("rejects malformed Upgrade actions in fixture changelog", () => {
+    const dir = mkdtempSync(join(tmpdir(), "max-export-preflight-"));
+    try {
+      writeFileSync(
+        join(dir, "package.json"),
+        JSON.stringify({ engines: { node: ">=22.13" } })
+      );
+      const bad = runReleasePreflight({
+        repoRoot: dir,
+        changelogText: `# Changelog\n\n## [Unreleased]\n\n## [1.0.7]\n`,
+        packageJsonText: readFileSync(join(dir, "package.json"), "utf8"),
+        clonePath: join(dir, "missing-clone"),
+      });
+      expect(bad.ok).toBe(false);
+      if (!bad.ok) {
+        expect(bad.errors.some((e) => e.includes("Upgrade actions"))).toBe(true);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("exportPublic invokes preflight before export work", () => {
+    expect(() =>
+      exportPublic({
+        outDir: join(tmpdir(), "max-export-dry"),
+        dryRun: true,
+        runPreflight: () => ({
+          ok: false,
+          errors: ["1.0.8: missing Upgrade actions section"],
+        }),
+      })
+    ).toThrow(/release preflight failed/);
+  });
+});
+
+describe("AGENTS.md export contract", () => {
+  it("is allowlisted and every relative link resolves inside the public export", () => {
+    expect(existsSync(AGENTS_MD)).toBe(true);
+    const body = readFileSync(AGENTS_MD, "utf8");
+    for (const link of markdownRelativeLinks(body)) {
+      const abs = normalize(resolve(REPO_ROOT, link));
+      const rel = relative(REPO_ROOT, abs).replace(/\\/g, "/");
+      expect(rel.startsWith("..")).toBe(false);
+      expect(existsSync(abs)).toBe(true);
+      expect(isIncluded(rel)).toBe(true);
     }
   });
 });

@@ -108,6 +108,7 @@ import { FeatureLabelLink, PipelineDocsMenu } from "./PipelineDocsMenu";
 import { useAvailableModels } from "./useAvailableModels";
 import { useNow, workspaceLabel } from "./helpers";
 import { useDashboardData } from "./useDashboardData";
+import { useRoadmapReadinessSummaries } from "./useRoadmapReadinessSummaries";
 import { NARROW_VIEWPORT_QUERY } from "./useIsNarrowViewport";
 
 type EditorState =
@@ -662,7 +663,15 @@ export function App() {
     selectView("settings");
   }, [selectView]);
   const updateChip = useMemo(() => {
-    const label = updateChipLabel(daemonStatus);
+    const label = updateChipLabel(
+      daemonStatus
+        ? {
+            updateState: daemonStatus.updateState,
+            available: daemonStatus.available,
+            runningNode: daemonStatus.runningNode,
+          }
+        : null
+    );
     if (!label) return null;
     return { label, onOpen: openAbout };
   }, [daemonStatus, openAbout]);
@@ -791,6 +800,12 @@ export function App() {
     () => workspaces.filter((w) => w.id !== "__global__"),
     [workspaces]
   );
+
+  const workspaceIdsForReadiness = useMemo(
+    () => chatWorkspaces.map((w) => w.id),
+    [chatWorkspaces]
+  );
+  const roadmapSummaries = useRoadmapReadinessSummaries(workspaceIdsForReadiness);
 
   useEffect(() => {
     if (chatWorkspaces.length === 0) return;
@@ -1769,6 +1784,7 @@ export function App() {
               onSelectAllWorkspaces={selectAllWorkspaces}
               onSelectWorkspace={selectWorkspace}
               onWorkspacesRefresh={refresh}
+              roadmapSummaries={roadmapSummaries}
               showAllOption={activeView === "board"}
               compactAdd
             />
@@ -1802,6 +1818,7 @@ export function App() {
             onSelectAllWorkspaces={selectAllWorkspaces}
             onSelectWorkspace={selectWorkspace}
             onWorkspacesRefresh={refresh}
+            roadmapSummaries={roadmapSummaries}
             search={search}
             onSearchChange={setSearch}
             onResetLayout={resetColumnLayout}
@@ -2070,6 +2087,7 @@ export function App() {
                 onSelectAllWorkspaces={selectAllWorkspaces}
                 onSelectWorkspace={selectWorkspace}
                 onWorkspacesRefresh={refresh}
+                roadmapSummaries={roadmapSummaries}
                 search={search}
                 onSearchChange={setSearch}
                 onResetLayout={resetColumnLayout}

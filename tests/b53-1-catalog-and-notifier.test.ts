@@ -79,8 +79,9 @@ describe("b53 phase 1 — catalog and approval notifier methods", () => {
       expect(NTFY_NOTIFY_EVENTS).toContain("plan_approval_required");
       expect(NTFY_NOTIFY_EVENTS).toContain("ux_approval_required");
       expect(NTFY_NOTIFY_EVENTS.indexOf("pipeline_complete")).toBe(4);
-      expect(NTFY_NOTIFY_EVENTS.indexOf("plan_approval_required")).toBe(6);
-      expect(NTFY_NOTIFY_EVENTS.indexOf("ux_approval_required")).toBe(7);
+      expect(NTFY_NOTIFY_EVENTS.indexOf("pipeline_blocked")).toBe(5);
+      expect(NTFY_NOTIFY_EVENTS.indexOf("plan_approval_required")).toBe(7);
+      expect(NTFY_NOTIFY_EVENTS.indexOf("ux_approval_required")).toBe(8);
     });
 
     it("accepts settings whose events include both approval ids", () => {

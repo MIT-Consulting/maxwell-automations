@@ -44,6 +44,7 @@ import { InputStore } from "../packages/daemon/src/input/store.ts";
 import { IMPLEMENT_FULLY_ENTRY_WORKER_KEY } from "../packages/daemon/src/pipelines/implement-fully.ts";
 import { RunEngine } from "../packages/daemon/src/runs/engine.ts";
 import { TriggerManager } from "../packages/daemon/src/triggers/manager.ts";
+import { emptyFeatureIndex } from "./helpers/empty-tracker.ts";
 import { freeListenPort } from "./helpers/free-port.ts";
 
 afterEach(() => {
@@ -102,7 +103,7 @@ function writeRoadmapIndex(workspacePath: string): void {
   );
   const featureDir = join(workspacePath, "docs", "roadmap", DOCUMENTED_SLUG);
   mkdirSync(featureDir, { recursive: true });
-  writeFileSync(join(featureDir, "00-index.md"), "# b42\n", "utf8");
+  writeFileSync(join(featureDir, "00-index.md"), emptyFeatureIndex("b42"), "utf8");
   writeFileSync(join(featureDir, "prd.md"), "# prd\n", "utf8");
 }
 

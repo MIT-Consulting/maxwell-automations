@@ -5,8 +5,33 @@
 
 import {
   CHAIN_VALUE_MAX_LENGTH,
+  classifyId,
+  epicRefusalMessage,
+  extractMarkdownHrefs,
+  formatFeatureIdMustMatchMessage,
+  hasIndexEntry,
+  hasPerPersonNextMarker,
+  IdFormatError,
   KickoffError,
+  isRoadmapIdCandidate,
+  parseNextMarkers,
+  parseRoadmapIndex,
+  pickCanonicalEntry,
+  RoadmapIndexError,
+  toHumanText,
   validateFeatureSlugIdea,
+  deriveSlug,
+  entryLinks,
+  isMarkdownPriorArtLink,
+  matchingSlugCandidates,
+  PER_PERSON_IDEA_REFUSAL,
+  resolveSlugFromChildren,
+  ROADMAP_DIR,
+  splitHrefPathFragment,
+  SYMLINK_CANDIDATE_MESSAGE,
+  type RoadmapChild,
+  type RoadmapIndexEntry,
+  type RoadmapReadinessInputs,
   type ResolveImplementFullyKickoffRequest,
   type ResolveImplementFullyKickoffResponse,
 } from "@lca/shared";
@@ -17,17 +42,7 @@ import {
   resolveWorkspaceFile,
 } from "../files/read.js";
 
-const ROADMAP_DIR = "docs/roadmap";
 const ROADMAP_INDEX = `${ROADMAP_DIR}/00-index.md`;
-const FEATURE_ID_RE = /^b\d+$/;
-const SLUG_RE = /^b\d+-[a-z0-9]+(-[a-z0-9]+)*$/;
-const NEXT_MARKER_RE = /<!--\s*next:\s*(b\d+)\s*-->/g;
-const MD_LINK_RE = /\[([^\]]*)\]\(([^)]+)\)/g;
-/** Trailing `— [docs](./x.md) · [PRD](./y.md)` metadata tail on a roadmap row. */
-const METADATA_LINK_TAIL_RE =
-  /\s+—\s*\[[^\]]*\]\([^)]+\)(?:\s*[·,]\s*\[[^\]]*\]\([^)]+\))*\s*$/u;
-const MAX_SLUG_LENGTH = 64;
-const MAX_SLUG_SEGMENTS = 6;
 
 export type RoadmapResolveBounds = {
   maxBytes: number;
@@ -44,22 +59,6 @@ export class RoadmapResolveError extends Error {
   }
 }
 
-type IndexSection = "backlog" | "documented-ideas" | "completed";
-
-type IndexEntry = {
-  featureId: string;
-  section: IndexSection;
-  /** Raw row/bullet text used for links and idea composition. */
-  raw: string;
-  title: string;
-  description: string;
-};
-
-type RoadmapChild = {
-  name: string;
-  kind: "dir" | "file" | "symlink";
-};
-
 function fail(
   category: "bad_request" | "not_found",
   message: string
@@ -75,33 +74,31 @@ function mapFileError(err: unknown, fallback: string): never {
   throw err;
 }
 
-/**
- * Human-readable text for a roadmap row. A trailing link tail is metadata —
- * its path is surfaced separately as prior art, so its label is dropped rather
- * than inlined. Remaining links keep their label and lose their syntax.
- */
-function toHumanText(text: string): string {
-  return text
-    .replace(METADATA_LINK_TAIL_RE, "")
-    .replace(MD_LINK_RE, "$1")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/[ \t]{2,}/g, " ")
-    .trim();
+function mapIndexError(err: unknown): never {
+  if (err instanceof RoadmapIndexError) {
+    if (err.code === "not-found") {
+      fail("not_found", err.message);
+    }
+    fail("bad_request", err.message);
+  }
+  if (err instanceof IdFormatError) {
+    fail("bad_request", err.message);
+  }
+  throw err;
 }
 
-function extractMarkdownHrefs(text: string): string[] {
-  const hrefs: string[] = [];
-  const re = new RegExp(MD_LINK_RE.source, "g");
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(text)) !== null) {
-    hrefs.push(match[2]!.trim());
+function mapSlugResolution(
+  result: ReturnType<typeof resolveSlugFromChildren>
+): { slug: string; kind: "dir" | "file" | "derived" } {
+  if (result.outcome === "resolved") {
+    return { slug: result.slug, kind: result.kind };
   }
-  return hrefs;
+  fail("bad_request", result.message);
 }
 
 /**
  * Normalize a relative Markdown href against docs/roadmap/.
- * Returns a forward-slash repo-relative path, or null for ignored links.
+ * Returns a forward-slash repo-relative path with optional #fragment, or null.
  */
 function normalizeRoadmapHref(
   href: string,
@@ -110,15 +107,19 @@ function normalizeRoadmapHref(
   const trimmed = href.trim();
   if (!trimmed || trimmed.startsWith("#")) return null;
   if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return null;
-  if (trimmed.includes("\\") || trimmed.includes("\0")) {
+
+  const { path, fragment } = splitHrefPathFragment(trimmed);
+  if (path.includes("\\") || path.includes("\0")) {
     fail("bad_request", "Roadmap link is unsafe");
   }
-  if (trimmed.startsWith("/") || /^[a-zA-Z]:/.test(trimmed)) {
+  if (path.startsWith("/") || /^[a-zA-Z]:/.test(path)) {
     fail("bad_request", "Roadmap link must be relative");
   }
 
-  let path = trimmed.replace(/^\.\//, "");
-  const segments = path.split("/").filter((s) => s.length > 0 && s !== ".");
+  let normalized = path.replace(/^\.\//, "");
+  const segments = normalized
+    .split("/")
+    .filter((s) => s.length > 0 && s !== ".");
   if (segments.some((s) => s === "..")) {
     fail("bad_request", "Roadmap link must not traverse");
   }
@@ -134,157 +135,24 @@ function normalizeRoadmapHref(
       if (err.code === "bad_request") {
         fail("bad_request", "Roadmap link escapes the roadmap tree");
       }
-      // Missing targets are not selectable metadata.
       return null;
     }
     throw err;
   }
-  return repoRel;
-}
-
-function deriveSlug(featureId: string, source: string): string {
-  const segments =
-    source
-      .toLowerCase()
-      .match(/[a-z0-9]+/g)
-      ?.slice(0, MAX_SLUG_SEGMENTS) ?? [];
-  if (segments.length === 0) {
-    fail("bad_request", "Cannot derive a feature slug from the source text");
-  }
-
-  const prefix = `${featureId}-`;
-  let suffix = segments.join("-");
-  const maxSuffix = MAX_SLUG_LENGTH - prefix.length;
-  if (maxSuffix < 1) {
-    fail("bad_request", "Cannot derive a feature slug from the source text");
-  }
-  if (suffix.length > maxSuffix) {
-    suffix = suffix.slice(0, maxSuffix).replace(/-+$/g, "");
-  }
-  if (!suffix || !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(suffix)) {
-    fail("bad_request", "Cannot derive a feature slug from the source text");
-  }
-  return `${featureId}-${suffix}`;
-}
-
-function sectionHeadingRe(heading: string): RegExp {
-  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  // Optional H2 suffix so `## Backlog (prioritized)` still counts as Backlog.
-  // The next `## ` heading still ends the section (`###` P1–P5 stay inside).
-  return new RegExp(`^##\\s+${escaped}(?:\\s+.+)?\\s*$`, "i");
-}
-
-function sectionBody(markdown: string, heading: string): string | null {
-  const lines = markdown.split(/\r?\n/);
-  const headingRe = sectionHeadingRe(heading);
-  const start = lines.findIndex((line) => headingRe.test(line));
-  if (start < 0) return null;
-  let end = lines.length;
-  for (let i = start + 1; i < lines.length; i++) {
-    if (/^##\s+/.test(lines[i]!)) {
-      end = i;
-      break;
-    }
-  }
-  return lines.slice(start + 1, end).join("\n");
-}
-
-function parseBacklogEntries(body: string): IndexEntry[] {
-  const entries: IndexEntry[] = [];
-  for (const line of body.split(/\r?\n/)) {
-    const match = line.match(/^- \*\*(b\d+)\*\*\s+(.+)$/);
-    if (!match) continue;
-    const featureId = match[1]!;
-    const raw = match[2]!;
-    const stripped = toHumanText(raw);
-    const parts = stripped.split(/\s+—\s+/u);
-    const title = (parts[0] ?? stripped).trim();
-    const description = parts.slice(1).join(" — ").trim();
-    entries.push({
-      featureId,
-      section: "backlog",
-      raw,
-      title,
-      description,
-    });
-  }
-  return entries;
-}
-
-function parseTableEntries(
-  body: string,
-  section: "documented-ideas" | "completed"
-): IndexEntry[] {
-  const entries: IndexEntry[] = [];
-  for (const line of body.split(/\r?\n/)) {
-    if (!line.startsWith("|")) continue;
-    const cells = line
-      .split("|")
-      .slice(1, -1)
-      .map((c) => c.trim());
-    if (cells.length < 2) continue;
-    const featureId = cells[0]!;
-    if (!FEATURE_ID_RE.test(featureId)) continue;
-    // Skip header / separator rows.
-    if (featureId === "ID" || /^[-:]+$/.test(featureId)) continue;
-
-    // Documented Ideas is `ID | Idea | Status | File` — the third cell is
-    // workflow status, not prose. Completed is `ID | Feature | Description | Docs`.
-    entries.push({
-      featureId,
-      section,
-      raw: line,
-      title: toHumanText(cells[1] ?? ""),
-      description:
-        section === "completed" ? toHumanText(cells[2] ?? "") : "",
-    });
-  }
-  return entries;
-}
-
-function parseIndexEntries(markdown: string): IndexEntry[] {
-  const entries: IndexEntry[] = [];
-  const backlog = sectionBody(markdown, "Backlog");
-  if (backlog != null) entries.push(...parseBacklogEntries(backlog));
-  const completed = sectionBody(markdown, "Completed");
-  if (completed != null) {
-    entries.push(...parseTableEntries(completed, "completed"));
-  }
-  const ideas = sectionBody(markdown, "Documented Ideas");
-  if (ideas != null) {
-    entries.push(...parseTableEntries(ideas, "documented-ideas"));
-  }
-  return entries;
-}
-
-function pickCanonicalEntry(
-  entries: IndexEntry[],
-  featureId: string
-): IndexEntry {
-  const priority: IndexSection[] = [
-    "backlog",
-    "documented-ideas",
-    "completed",
-  ];
-  for (const section of priority) {
-    const inSection = entries.filter(
-      (e) => e.featureId === featureId && e.section === section
-    );
-    if (inSection.length > 1) {
-      fail(
-        "bad_request",
-        `Roadmap index has duplicate ${featureId} entries in the same section`
-      );
-    }
-    if (inSection.length === 1) return inSection[0]!;
-  }
-  fail("not_found", `Feature ${featureId} not found in roadmap index`);
+  return `${repoRel}${fragment}`;
 }
 
 function readRoadmapIndex(
   workspaceRoot: string,
-  bounds: RoadmapResolveBounds
+  bounds: RoadmapResolveBounds,
+  cache?: Pick<RoadmapReadinessInputs, "indexMarkdown" | "indexTruncated">
 ): string {
+  if (cache?.indexTruncated) {
+    fail("bad_request", "Roadmap index exceeds the read limit");
+  }
+  if (cache?.indexMarkdown != null) {
+    return cache.indexMarkdown;
+  }
   let content;
   try {
     content = readWorkspaceFile(workspaceRoot, ROADMAP_INDEX, {
@@ -304,8 +172,15 @@ function readRoadmapIndex(
 
 function listRoadmapChildren(
   workspaceRoot: string,
-  bounds: RoadmapResolveBounds
+  bounds: RoadmapResolveBounds,
+  cache?: Pick<RoadmapReadinessInputs, "roadmapChildren" | "roadmapListingTruncated">
 ): RoadmapChild[] {
+  if (cache?.roadmapListingTruncated) {
+    fail("bad_request", "Roadmap directory listing truncated");
+  }
+  if (cache?.roadmapChildren != null) {
+    return [...cache.roadmapChildren];
+  }
   let listing;
   try {
     listing = listWorkspaceDir(workspaceRoot, ROADMAP_DIR, {
@@ -323,101 +198,28 @@ function listRoadmapChildren(
   }));
 }
 
-function matchingSlugCandidates(
-  children: RoadmapChild[],
-  featureId: string,
-  kind: "dir" | "file"
-): string[] {
-  const prefix = `${featureId}-`;
-  const names: string[] = [];
-  for (const child of children) {
-    if (kind === "dir") {
-      if (child.kind === "symlink" && child.name.startsWith(prefix)) {
-        fail(
-          "bad_request",
-          "Roadmap candidate is a symlink and cannot be used"
-        );
-      }
-      if (child.kind !== "dir") continue;
-      if (SLUG_RE.test(child.name) && child.name.startsWith(prefix)) {
-        names.push(child.name);
-      }
-      continue;
-    }
-    if (child.kind === "symlink" && child.name.startsWith(prefix)) {
-      fail(
-        "bad_request",
-        "Roadmap candidate is a symlink and cannot be used"
-      );
-    }
-    if (child.kind !== "file") continue;
-    if (!child.name.endsWith(".md")) continue;
-    const stem = child.name.slice(0, -3);
-    if (SLUG_RE.test(stem) && stem.startsWith(prefix)) {
-      names.push(stem);
-    }
-  }
-  return names;
-}
-
 function safeLinksForEntry(
-  entry: IndexEntry,
+  entry: RoadmapIndexEntry,
   workspaceRoot: string
 ): string[] {
   const out: string[] = [];
-  for (const href of extractMarkdownHrefs(entry.raw)) {
+  for (const href of entryLinks(entry)) {
     const normalized = normalizeRoadmapHref(href, workspaceRoot);
     if (normalized) out.push(normalized);
   }
   return out;
 }
 
-function selectByLink(
-  candidates: string[],
-  links: string[]
-): string | null {
-  const selected = new Set<string>();
-  for (const link of links) {
-    if (!link.startsWith(`${ROADMAP_DIR}/`)) continue;
-    const rest = link.slice(ROADMAP_DIR.length + 1);
-    const first = rest.split("/")[0]!;
-    const stem = first.endsWith(".md") ? first.slice(0, -3) : first;
-    if (candidates.includes(stem)) selected.add(stem);
-  }
-  if (selected.size === 1) return [...selected][0]!;
-  return null;
-}
-
-function resolveSlugFromChildren(
-  featureId: string,
+function assertNoSymlinkCandidates(
   children: RoadmapChild[],
-  links: string[],
-  entry: IndexEntry
-): { slug: string; kind: "dir" | "file" | "derived" } {
-  const dirs = matchingSlugCandidates(children, featureId, "dir");
-  if (dirs.length === 1) return { slug: dirs[0]!, kind: "dir" };
-  if (dirs.length > 1) {
-    const picked = selectByLink(dirs, links);
-    if (picked) return { slug: picked, kind: "dir" };
-    fail(
-      "bad_request",
-      `Ambiguous roadmap folders for ${featureId}`
-    );
+  featureId: string
+): void {
+  for (const kind of ["dir", "file"] as const) {
+    const result = matchingSlugCandidates(children, featureId, kind);
+    if (result.symlinkBlocked) {
+      fail("bad_request", SYMLINK_CANDIDATE_MESSAGE);
+    }
   }
-
-  const files = matchingSlugCandidates(children, featureId, "file");
-  if (files.length === 1) return { slug: files[0]!, kind: "file" };
-  if (files.length > 1) {
-    const picked = selectByLink(files, links);
-    if (picked) return { slug: picked, kind: "file" };
-    fail(
-      "bad_request",
-      `Ambiguous roadmap documents for ${featureId}`
-    );
-  }
-
-  const source = [entry.title, entry.description].filter(Boolean).join(" ");
-  return { slug: deriveSlug(featureId, source), kind: "derived" };
 }
 
 function pathExists(
@@ -433,7 +235,6 @@ function pathExists(
   } catch (err) {
     if (err instanceof FileViewerError) {
       if (err.code === "not_found") return false;
-      // Directory / symlink / escape → not usable prior art.
       return false;
     }
     throw err;
@@ -441,7 +242,7 @@ function pathExists(
 }
 
 function composeIdea(
-  entry: IndexEntry,
+  entry: RoadmapIndexEntry,
   workspaceRoot: string,
   slug: string,
   slugKind: "dir" | "file" | "derived",
@@ -461,7 +262,7 @@ function composeIdea(
   }
   if (priorArt == null) {
     for (const link of links) {
-      if (link.endsWith(".md")) {
+      if (isMarkdownPriorArtLink(link)) {
         priorArt = link;
         break;
       }
@@ -503,24 +304,48 @@ function assertValidatedTriple(
   return { featureId, featureSlug, idea };
 }
 
+function classifyFeatureIdOrFail(
+  featureId: string,
+  parsed: ReturnType<typeof parseRoadmapIndex>
+): void {
+  if (!isRoadmapIdCandidate(featureId)) {
+    fail("bad_request", formatFeatureIdMustMatchMessage(parsed.formats));
+  }
+  const kind = classifyId(featureId, parsed.formats);
+  if (kind === "epic") {
+    fail("bad_request", epicRefusalMessage(featureId));
+  }
+  if (kind === "unknown") {
+    fail("bad_request", formatFeatureIdMustMatchMessage(parsed.formats));
+  }
+}
+
 function resolveFeatureId(
   workspaceRoot: string,
   featureId: string,
-  bounds: RoadmapResolveBounds
+  bounds: RoadmapResolveBounds,
+  cache?: RoadmapReadinessInputs
 ): ResolveImplementFullyKickoffResponse {
-  if (!FEATURE_ID_RE.test(featureId)) {
-    fail("bad_request", "featureId must match ^b\\d+$");
+  const markdown = readRoadmapIndex(workspaceRoot, bounds, cache);
+  let parsed;
+  try {
+    parsed = parseRoadmapIndex(markdown);
+  } catch (err) {
+    mapIndexError(err);
   }
-  const markdown = readRoadmapIndex(workspaceRoot, bounds);
-  const entries = parseIndexEntries(markdown);
-  const entry = pickCanonicalEntry(entries, featureId);
-  const children = listRoadmapChildren(workspaceRoot, bounds);
+  classifyFeatureIdOrFail(featureId, parsed);
+
+  let entry: RoadmapIndexEntry;
+  try {
+    entry = pickCanonicalEntry(parsed.entries, featureId);
+  } catch (err) {
+    mapIndexError(err);
+  }
+  const children = listRoadmapChildren(workspaceRoot, bounds, cache);
+  assertNoSymlinkCandidates(children, featureId);
   const links = safeLinksForEntry(entry, workspaceRoot);
-  const { slug, kind } = resolveSlugFromChildren(
-    featureId,
-    children,
-    links,
-    entry
+  const { slug, kind } = mapSlugResolution(
+    resolveSlugFromChildren(featureId, children, links, entry)
   );
   const idea = composeIdea(
     entry,
@@ -533,24 +358,11 @@ function resolveFeatureId(
   return assertValidatedTriple(featureId, slug, idea);
 }
 
-function hasExactIndexEntry(entries: IndexEntry[], featureId: string): boolean {
-  return entries.some((e) => e.featureId === featureId);
-}
-
-function hasDirectMatch(
-  children: RoadmapChild[],
-  featureId: string
-): boolean {
-  return (
-    matchingSlugCandidates(children, featureId, "dir").length > 0 ||
-    matchingSlugCandidates(children, featureId, "file").length > 0
-  );
-}
-
 function resolveIdea(
   workspaceRoot: string,
   idea: string,
-  bounds: RoadmapResolveBounds
+  bounds: RoadmapResolveBounds,
+  cache?: RoadmapReadinessInputs
 ): ResolveImplementFullyKickoffResponse {
   const trimmed = idea.trim();
   if (!trimmed) {
@@ -564,29 +376,54 @@ function resolveIdea(
     );
   }
 
-  const markdown = readRoadmapIndex(workspaceRoot, bounds);
-  const markers = [...markdown.matchAll(NEXT_MARKER_RE)].map((m) => m[1]!);
-  if (markers.length === 0) {
+  const markdown = readRoadmapIndex(workspaceRoot, bounds, cache);
+  if (hasPerPersonNextMarker(markdown)) {
+    fail("bad_request", PER_PERSON_IDEA_REFUSAL);
+  }
+
+  const plainMarkers = parseNextMarkers(markdown).filter(
+    (m) => m.kind === "plain"
+  );
+  if (plainMarkers.length === 0) {
     fail("bad_request", "Roadmap index is missing the next-id marker");
   }
-  if (markers.length > 1) {
+  if (plainMarkers.length > 1) {
     fail("bad_request", "Roadmap index has duplicate next-id markers");
   }
-  const featureId = markers[0]!;
-  const entries = parseIndexEntries(markdown);
-  const children = listRoadmapChildren(workspaceRoot, bounds);
-  if (
-    hasExactIndexEntry(entries, featureId) ||
-    hasDirectMatch(children, featureId)
-  ) {
+  const featureId = plainMarkers[0]!.id;
+
+  let parsed;
+  try {
+    parsed = parseRoadmapIndex(markdown);
+  } catch (err) {
+    mapIndexError(err);
+  }
+
+  const children = listRoadmapChildren(workspaceRoot, bounds, cache);
+  if (hasIndexEntry(parsed.entries, featureId)) {
     fail(
       "bad_request",
       `Next feature id ${featureId} is already allocated`
     );
   }
+  for (const kind of ["dir", "file"] as const) {
+    const match = matchingSlugCandidates(children, featureId, kind);
+    if (match.symlinkBlocked) {
+      fail("bad_request", SYMLINK_CANDIDATE_MESSAGE);
+    }
+    if (match.candidates.length > 0) {
+      fail(
+        "bad_request",
+        `Next feature id ${featureId} is already allocated`
+      );
+    }
+  }
 
-  const featureSlug = deriveSlug(featureId, trimmed);
-  return assertValidatedTriple(featureId, featureSlug, trimmed);
+  const derived = deriveSlug(featureId, trimmed);
+  if (!derived.ok) {
+    fail("bad_request", derived.message);
+  }
+  return assertValidatedTriple(featureId, derived.slug, trimmed);
 }
 
 /**
@@ -595,10 +432,14 @@ function resolveIdea(
 export function resolveImplementFullyKickoff(
   workspaceRoot: string,
   input: ResolveImplementFullyKickoffRequest["input"],
-  bounds: RoadmapResolveBounds
+  bounds: RoadmapResolveBounds,
+  cache?: RoadmapReadinessInputs
 ): ResolveImplementFullyKickoffResponse {
   if (input.kind === "feature-id") {
-    return resolveFeatureId(workspaceRoot, input.featureId, bounds);
+    return resolveFeatureId(workspaceRoot, input.featureId, bounds, cache);
   }
-  return resolveIdea(workspaceRoot, input.idea, bounds);
+  return resolveIdea(workspaceRoot, input.idea, bounds, cache);
 }
+
+// Re-export for tests that import parsing helpers from resolve.
+export { toHumanText, extractMarkdownHrefs };

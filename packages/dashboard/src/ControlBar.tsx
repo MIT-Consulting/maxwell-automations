@@ -40,7 +40,10 @@ import {
 import { StatusDot } from "@/components/StatusDot";
 import { cn } from "@/lib/utils";
 import { AddWorkspaceForm } from "./AddWorkspaceForm";
+import { RoadmapReadinessBadge } from "./RoadmapReadinessBadge";
 import { workspaceLabel } from "./helpers";
+import type { RoadmapSummaryEntry } from "./useRoadmapReadinessSummaries";
+
 export type ControlBarProps = {
   connected: boolean;
   collapsed: boolean;
@@ -69,6 +72,8 @@ export type ControlBarProps = {
   onSelectView?: (view: "board" | "chat" | "files" | "settings") => void;
   /** Quiet chip for available / restart-required. Click opens Settings → About. */
   updateChip?: { label: string; onOpen: () => void } | null;
+  /** Roadmap readiness summaries keyed by workspace id (excludes `__global__`). */
+  roadmapSummaries?: Map<string, RoadmapSummaryEntry>;
 };
 
 export type WorkspacePickerProps = {
@@ -80,6 +85,7 @@ export type WorkspacePickerProps = {
   onSelectAllWorkspaces: () => void;
   onSelectWorkspace: (id: string) => void;
   onWorkspacesRefresh: () => void;
+  roadmapSummaries?: Map<string, RoadmapSummaryEntry>;
   /** "All" only makes sense as a Board aggregate — Chat/Files/Settings always
    *  need exactly one focused workspace, so they never offer it. */
   showAllOption: boolean;
@@ -137,6 +143,7 @@ export function WorkspacePicker({
   onSelectAllWorkspaces,
   onSelectWorkspace,
   onWorkspacesRefresh,
+  roadmapSummaries,
   showAllOption,
   compactAdd = false,
   className,
@@ -198,11 +205,16 @@ export function WorkspacePicker({
           )}
           {pickerWorkspaces.map((w) => (
             <SelectItem key={w.id} value={w.id}>
-              {/* Automation counts are Board context — showing them on
-                  Chat/Files/Settings implies a relevance they don't have there. */}
-              {showAllOption
-                ? `${workspaceLabel(w.id, workspaces)} (${automationCountByWs.get(w.id) ?? 0})`
-                : workspaceLabel(w.id, workspaces)}
+              <span className="flex min-w-0 items-center gap-2">
+                <span className="min-w-0 truncate">
+                  {/* Automation counts are Board context — showing them on
+                      Chat/Files/Settings implies a relevance they don't have there. */}
+                  {showAllOption
+                    ? `${workspaceLabel(w.id, workspaces)} (${automationCountByWs.get(w.id) ?? 0})`
+                    : workspaceLabel(w.id, workspaces)}
+                </span>
+                <RoadmapReadinessBadge entry={roadmapSummaries?.get(w.id)} />
+              </span>
             </SelectItem>
           ))}
         </SelectContent>
@@ -496,6 +508,7 @@ export function ControlBar({
   activeView,
   onSelectView,
   updateChip = null,
+  roadmapSummaries,
 }: ControlBarProps) {
   const connLabel = connected ? "Daemon connected" : "Daemon offline";
   const showBoardCluster = activeView === undefined || activeView === "board";
@@ -697,6 +710,7 @@ export function ControlBar({
           onSelectAllWorkspaces={onSelectAllWorkspaces}
           onSelectWorkspace={onSelectWorkspace}
           onWorkspacesRefresh={onWorkspacesRefresh}
+          roadmapSummaries={roadmapSummaries}
           showAllOption={showBoardCluster}
         />
       </div>

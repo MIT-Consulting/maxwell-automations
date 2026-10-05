@@ -21,13 +21,13 @@ describe("b51 phase 3 — Settings Alerts tab UI", () => {
     );
   });
 
-  it("AlertsSettingsPanel wires GET/PATCH/test client methods and thirteen-event matrix", () => {
+  it("AlertsSettingsPanel wires GET/PATCH/test client methods and fourteen-event matrix", () => {
     const panel = readSrc("packages/dashboard/src/AlertsSettingsPanel.tsx");
     expect(panel).toMatch(/getNotifySettings\(\)/);
     expect(panel).toMatch(/updateNotifySettings\(/);
     expect(panel).toMatch(/testNotifySettings\(\)/);
     expect(panel).toMatch(/ALERT_NOTIFY_EVENTS\.map\(/);
-    expect(ALERT_NOTIFY_EVENTS).toHaveLength(13);
+    expect(ALERT_NOTIFY_EVENTS).toHaveLength(14);
     for (const eventId of ALERT_NOTIFY_EVENTS) {
       expect(panel).toContain(eventId);
     }

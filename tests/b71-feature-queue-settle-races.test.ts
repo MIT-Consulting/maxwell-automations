@@ -113,6 +113,13 @@ function workerAutomationId(workspaceId: string, workerKey: string): string {
   );
 }
 
+function stampGreenFinalGate(db: Db, runId: string, reason = "complete: green"): void {
+  db.prepare(
+    `UPDATE runs SET chain_stop_requested_at = datetime('now'),
+       chain_stop_reason = ? WHERE id = ?`
+  ).run(reason, runId);
+}
+
 function insertRun(
   db: Db,
   args: {
@@ -462,6 +469,7 @@ describe("b71 feature queue settle races", () => {
         chainRootRunId: rootId,
         parentRunId: planPhaseId,
       });
+      stampGreenFinalGate(h.db, finalGateId);
       h.events.emitRunStatus(finalGateId, "completed");
       await until(() => h.queueStore.getEntry(entry.id)?.state === "running");
       expect(h.triggerCalls.filter((c) => c.triggerKind === "manual")).toHaveLength(1);
@@ -770,6 +778,7 @@ describe("b71 feature queue settle races", () => {
         status: "completed",
         chainRootRunId: rootRunId,
       });
+      stampGreenFinalGate(h.db, finalGateId);
       h.events.emitRunStatus(finalGateId, "completed");
       await until(() => h.queueStore.getEntry(a.id)?.state === "done");
       expect(h.queueStore.getEntry(a.id)?.detail).toBe(FEATURE_QUEUE_RECOVERED_DETAIL);
@@ -792,6 +801,7 @@ describe("b71 feature queue settle races", () => {
           status: "completed",
           chainRootRunId: lineageRoot,
         });
+        stampGreenFinalGate(h.db, gateId);
         h.db
           .prepare(`UPDATE runs SET status = 'completed' WHERE id = ?`)
           .run(lineageRoot);
@@ -876,6 +886,7 @@ describe("b71 feature queue settle races", () => {
         status: "completed",
         chainRootRunId: rootRunId,
       });
+      stampGreenFinalGate(h.db, finalGateId);
       const blockerId = randomUUID();
       insertRun(h.db, {
         id: blockerId,
@@ -897,8 +908,104 @@ describe("b71 feature queue settle races", () => {
     }
   });
 
+  it("settles a queue-owned blocked halt as failed and parks dependents", async () => {
+    const h = await createHarness();
+    try {
+      const fake = createFakeSettleSource();
+      const runner = new FeatureQueueRunner({
+        store: h.store,
+        queueStore: h.queueStore,
+        engine: h.engine,
+        events: h.events,
+        onLog: () => {},
+        settleSource: fake,
+      });
+      runner.start();
+
+      const a = h.queueStore.enqueue({
+        workspaceId: h.workspaceId,
+        featureId: "b85a",
+        after: [],
+        kickoff: { automationId: h.entryAutomationId, maxDepth: 13 },
+      });
+      const b = h.queueStore.enqueue({
+        workspaceId: h.workspaceId,
+        featureId: "b85b",
+        after: ["b85a"],
+        kickoff: { automationId: h.entryAutomationId, maxDepth: 13 },
+      });
+      await runner.startNextIfIdle(h.workspaceId);
+      const rootRunId = h.queueStore.getRunningEntry(h.workspaceId)!.run_id!;
+      h.db
+        .prepare(
+          `UPDATE runs SET status = 'completed',
+             chain_stop_requested_at = datetime('now'),
+             chain_stop_reason = ? WHERE id = ?`
+        )
+        .run("blocked: operator halt", rootRunId);
+      fake.emit(rootRunId, "completed");
+      await until(() => h.queueStore.getEntry(a.id)?.state === "failed");
+      expect(h.queueStore.getEntry(a.id)?.detail).toContain("halted:");
+      expect(h.queueStore.getEntry(b.id)?.state).toBe("blocked");
+      runner.stop();
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  it("keeps the queue entry running across a complete: transition gap without settleSource in-flight", async () => {
+    const h = await createHarness();
+    try {
+      const fake = createFakeSettleSource();
+      const runner = new FeatureQueueRunner({
+        store: h.store,
+        queueStore: h.queueStore,
+        engine: h.engine,
+        events: h.events,
+        onLog: () => {},
+        settleSource: fake,
+      });
+      runner.start();
+
+      const a = h.queueStore.enqueue({
+        workspaceId: h.workspaceId,
+        featureId: "b85gap",
+        after: [],
+        kickoff: { automationId: h.entryAutomationId, maxDepth: 13 },
+      });
+      const b = h.queueStore.enqueue({
+        workspaceId: h.workspaceId,
+        featureId: "b85next",
+        after: ["b85gap"],
+        kickoff: { automationId: h.entryAutomationId, maxDepth: 13 },
+      });
+      await runner.startNextIfIdle(h.workspaceId);
+      const rootRunId = h.queueStore.getRunningEntry(h.workspaceId)!.run_id!;
+      // Mid-handoff: worker completed with complete: but successor not yet spawned.
+      // Unwired path has no hasTransitionInFlight — classifier alone must stay running.
+      expect(fake.hasTransitionInFlight(h.workspaceId)).toBe(false);
+      h.db
+        .prepare(
+          `UPDATE runs SET status = 'completed',
+             chain_stop_requested_at = datetime('now'),
+             chain_stop_reason = ? WHERE id = ?`
+        )
+        .run("complete: handoff ready", rootRunId);
+      fake.emit(rootRunId, "completed");
+      await sleep(120);
+      expect(h.queueStore.getEntry(a.id)?.state).toBe("running");
+      expect(h.queueStore.getEntry(b.id)?.state).toBe("queued");
+      expect(h.triggerCalls.filter((c) => c.triggerKind === "manual")).toHaveLength(
+        1
+      );
+      runner.stop();
+    } finally {
+      h.cleanup();
+    }
+  });
+
   it("wires settleSource and start order in index.ts", () => {
-    const src = readSrc("packages/daemon/src/index.ts");
+    const src = readSrc("packages/daemon/src/daemon.ts");
     const runnerBlock = src.match(
       /new FeatureQueueRunner\(\{[\s\S]*?\}\);/
     )?.[0];

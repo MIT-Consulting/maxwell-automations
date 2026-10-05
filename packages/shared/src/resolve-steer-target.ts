@@ -14,6 +14,10 @@ function isSteerable(status: string): boolean {
   return status === "running";
 }
 
+function isStopEligible(status: string): boolean {
+  return status === "running" || status === "paused";
+}
+
 /** Mirrors dashboard `effectivePipelineGroupRuns` — leaves win; fall back to all. */
 function effectivePipelineGroupRuns(
   runs: readonly SteerTargetCandidate[]
@@ -130,4 +134,40 @@ export function resolveSteerTargetRunId(args: {
   // attach still resolves to a live frontier worker).
   const attachedRoot = attached ? chainRootFor(attached) : attachedRunId;
   return resolveFromPipelineRoot(attachedRoot, candidates);
+}
+
+/** Frontier leaf for stop-after-step: one running or paused worker. */
+export function resolvePipelineStopFrontier(args: {
+  rootRunId: string;
+  candidates: ReadonlyArray<SteerTargetCandidate>;
+}): SteerTargetResolution {
+  const pipelineCandidates = args.candidates.filter(
+    (c) => chainRootFor(c) === args.rootRunId
+  );
+  if (pipelineCandidates.length === 0) {
+    return {
+      kind: "none",
+      reason: "No active workers found for this pipeline",
+    };
+  }
+
+  const frontier = effectivePipelineGroupRuns(pipelineCandidates);
+  const eligible = frontier.filter((c) => isStopEligible(c.status));
+
+  if (eligible.length === 1) {
+    return { kind: "resolved", runId: eligible[0]!.id };
+  }
+  if (eligible.length > 1) {
+    const ids = eligible.map((c) => c.id);
+    return {
+      kind: "ambiguous",
+      runIds: ids,
+      reason: `Multiple active workers (${ids.join(", ")}); stop-after-step requires a single frontier`,
+    };
+  }
+
+  return {
+    kind: "none",
+    reason: "No running or paused worker found for this pipeline",
+  };
 }

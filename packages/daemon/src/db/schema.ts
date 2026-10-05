@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 21;
+export const SCHEMA_VERSION = 24;
 
 export const MIGRATION_V1_SQL = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -386,4 +386,28 @@ ALTER TABLE feature_queue_entries ADD COLUMN batch_digest_at TEXT;
 
 export const MIGRATION_V21_CHAT_ATTACHED_RUN_SQL = `
 ALTER TABLE chat_sessions ADD COLUMN attached_run_id TEXT REFERENCES runs(id);
+`;
+
+export const MIGRATION_V22_FEATURE_QUEUE_ORIGIN_SQL = `
+ALTER TABLE feature_queue_entries ADD COLUMN origin TEXT NOT NULL DEFAULT 'queue';
+`;
+
+/** Lineage projection index for b81 pipeline snapshot hydration. */
+export const MIGRATION_V23_CHAIN_ROOT_INDEX_SQL = `
+CREATE INDEX IF NOT EXISTS idx_runs_chain_root ON runs(chain_root_run_id);
+`;
+
+/** Durable forward-only pipeline directives (b81 phase 4). */
+export const MIGRATION_V24_PIPELINE_DIRECTIVES_SQL = `
+CREATE TABLE IF NOT EXISTS pipeline_directives (
+  id TEXT PRIMARY KEY,
+  root_run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  actor_id TEXT,
+  body_json TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_pipeline_directives_root_created
+  ON pipeline_directives(root_run_id, created_at);
 `;

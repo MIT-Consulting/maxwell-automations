@@ -542,6 +542,11 @@ function shortRunId(id: string): string {
   return id.slice(0, 8);
 }
 
+function actorIdLabel(parsed: AnyRecord | undefined): string {
+  const actorId = str(parsed?.actorId);
+  return actorId ? ` (actor: ${actorId})` : "";
+}
+
 /**
  * Readable transcript divider for `run.pipeline-escalated`. Attribution comes
  * only from a strictly narrowed `actor` — never inferred from chain fields.
@@ -591,19 +596,21 @@ function mapPipelineEscalated(
   if (actor === "operator") {
     const reason = str(parsed?.reason);
     const reasonPart = reason ? ` Reason: ${reason}.` : "";
+    const actorPart = actorIdLabel(parsed);
     return {
       ...base(ev, "system"),
       tone: "info",
       title: "operator escalation",
-      body: `Operator escalated with ${action}.${childPart}${reasonPart}`.trim(),
+      body: `Operator escalated with ${action}.${childPart}${reasonPart}${actorPart}`.trim(),
     };
   }
 
+  const actorPart = actorIdLabel(parsed);
   return {
     ...base(ev, "system"),
     tone: "info",
     title: "pipeline escalated",
-    body: `Pipeline escalated with ${action}.${childPart}`.trim(),
+    body: `Pipeline escalated with ${action}.${childPart}${actorPart}`.trim(),
   };
 }
 
@@ -905,19 +912,21 @@ function mapParsed(ev: StoredEvent, parsed: AnyRecord | undefined): ChatMessage 
     case "run.message":
     case "chat.message": {
       const attachments = parseAttachments(parsed);
+      const text = str(parsed?.text) ?? "";
       return {
         ...base(ev, "user"),
-        body: userBody(str(parsed?.text), Boolean(attachments?.length)),
+        body: userBody(`${text}${actorIdLabel(parsed)}`, Boolean(attachments?.length)),
         ...(attachments ? { attachments } : {}),
       };
     }
     case "run.message.queued":
     case "chat.message.queued": {
       const attachments = parseAttachments(parsed);
+      const text = str(parsed?.text) ?? "";
       return {
         ...base(ev, "user"),
         title: "Queued",
-        body: userBody(str(parsed?.text), Boolean(attachments?.length)),
+        body: userBody(`${text}${actorIdLabel(parsed)}`, Boolean(attachments?.length)),
         ...(attachments ? { attachments } : {}),
       };
     }
@@ -936,10 +945,11 @@ function mapParsed(ev: StoredEvent, parsed: AnyRecord | undefined): ChatMessage 
     case "run.interrupted":
     case "chat.interrupted": {
       const attachments = parseAttachments(parsed);
+      const text = str(parsed?.text) ?? "";
       return {
         ...base(ev, "user"),
         title: "Interrupted",
-        body: userBody(str(parsed?.text), Boolean(attachments?.length)),
+        body: userBody(`${text}${actorIdLabel(parsed)}`, Boolean(attachments?.length)),
         ...(attachments ? { attachments } : {}),
       };
     }
@@ -967,7 +977,11 @@ function mapParsed(ev: StoredEvent, parsed: AnyRecord | undefined): ChatMessage 
       return { ...base(ev, "question"), body: str(parsed?.question) ?? "(awaiting input)" };
     }
     case "input.delivered": {
-      return { ...base(ev, "answer"), body: str(parsed?.answer) ?? "" };
+      const answer = str(parsed?.answer) ?? "";
+      return {
+        ...base(ev, "answer"),
+        body: `${answer}${actorIdLabel(parsed)}`,
+      };
     }
     case "run.started":
     case "chat.started": {
@@ -977,6 +991,30 @@ function mapParsed(ev: StoredEvent, parsed: AnyRecord | undefined): ChatMessage 
         ...base(ev, "system"),
         tone: "info",
         title: summary ? `started (${summary})` : "started",
+      };
+    }
+    case "run.paused": {
+      return {
+        ...base(ev, "system"),
+        tone: "info",
+        title: "paused",
+        body: `Paused by operator${actorIdLabel(parsed)}`,
+      };
+    }
+    case "run.pause.resumed": {
+      return {
+        ...base(ev, "system"),
+        tone: "info",
+        title: "resumed",
+        body: `Resumed by operator${actorIdLabel(parsed)}`,
+      };
+    }
+    case "run.cancelled": {
+      return {
+        ...base(ev, "system"),
+        tone: "info",
+        title: "cancelled",
+        body: `Cancelled by operator${actorIdLabel(parsed)}`,
       };
     }
     case "run.resumed":

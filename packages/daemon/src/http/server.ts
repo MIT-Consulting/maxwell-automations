@@ -59,12 +59,17 @@ import {
   updateWorkspaceChatDefaultsSchema,
   updateNotifySettingsSchema,
   workspaceCreateSchema,
+  pipelineSummaryFromContext,
+  parseActorIdFromRequest,
   type ChainRunContext,
   type McpOverlay,
   type NotifySettingsPublic,
   type UpdateNotifySettingsInput,
   type UpdateSnapshot,
   type WorkspaceChatDefaults,
+  KickoffReadinessError,
+  assertKickoffReadinessAllowed,
+  analyzeRoadmapReadiness,
 } from "@lca/shared";
 import { ChatEngine, ChatMessageError } from "../chats/engine.js";
 import { mapChatSession } from "../chats/store.js";
@@ -101,6 +106,12 @@ import {
   RoadmapResolveError,
   resolveImplementFullyKickoff,
 } from "../roadmap/resolve.js";
+import {
+  analyzeWorkspaceRoadmapReadiness,
+  buildWorkspaceRoadmapFixPlan,
+  gatherRoadmapReadinessInputs,
+  summarizeAllWorkspacesRoadmapReadiness,
+} from "../roadmap/readiness.js";
 import type { PipelineWaveCoordinator } from "../runs/pipeline-wave-coordinator.js";
 import {
   FeatureQueueError,
@@ -108,6 +119,21 @@ import {
   toFeatureQueueEntry,
 } from "../runs/feature-queue-store.js";
 import type { FeatureQueueRunner } from "../runs/feature-queue-runner.js";
+import { isImplementFullyContext } from "../runs/pipeline-handoff.js";
+import { PipelineFeedWaitRegistry } from "../runs/pipeline-feed-wait.js";
+import {
+  hydratePipelineSnapshot,
+  parsePipelineFeedSinceParam,
+  parsePipelineFeedWaitParam,
+  pollPipelineFeed,
+  resolvePipelineSnapshotByFeature,
+} from "../runs/pipeline-projection.js";
+import {
+  appendPipelineDirectiveForRoot,
+  applyPipelineStopAfterStep,
+  pipelineSteeringHttpStatus,
+} from "../runs/pipeline-steering.js";
+import { RunStore } from "../runs/store.js";
 import type { DashboardStore } from "./dashboard-store.js";
 import { WorkspaceNotFoundError } from "./dashboard-store.js";
 import { pickWorkspaceFolder } from "./folder-picker.js";
@@ -146,15 +172,26 @@ export type HttpServer = {
   port: number;
   /** Primary configured bind host (back-compat; see `bindAddresses` for the full set). */
   host: string;
-  /** Every address actually listened on — loopback plus any specific bind host. */
+  /**
+   * Every address actually listened on — loopback plus any specific bind host.
+   * Live: a specific host that was unassigned at boot joins once a background
+   * rebind succeeds.
+   */
   bindAddresses: string[];
+  /** Configured bind hosts not currently listening (still being retried). */
+  unboundHosts: string[];
   close: () => Promise<void>;
 };
+
+/** Interval between background attempts to bind a specific host that was unassigned at boot. */
+export const REBIND_RETRY_MS = 15_000;
 
 export type HttpServerDeps = {
   engine: RunEngine;
   chatEngine: ChatEngine;
   store: DashboardStore;
+  /** Shared run store; defaults to a read-only instance over `db` when omitted. */
+  runStore?: RunStore;
   db: LcaDatabase;
   events: DaemonEventBus;
   apiKey: string;
@@ -268,6 +305,31 @@ function readJson<T>(req: IncomingMessage): Promise<T> {
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(body));
+}
+
+function resolveOperatorActorId(
+  req: IncomingMessage,
+  body: unknown
+): string | undefined {
+  const headerRaw = req.headers["x-lca-actor"];
+  const header =
+    typeof headerRaw === "string"
+      ? headerRaw
+      : Array.isArray(headerRaw)
+        ? headerRaw[0]
+        : undefined;
+  const bodyRecord =
+    typeof body === "object" && body != null && !Array.isArray(body)
+      ? (body as Record<string, unknown>)
+      : {};
+  const parsed = parseActorIdFromRequest({
+    header,
+    bodyActorId: bodyRecord.actorId,
+  });
+  if (!parsed.ok) {
+    throw new Error(parsed.error);
+  }
+  return parsed.actorId;
 }
 
 /** Strip the IPv4-mapped-IPv6 prefix so `::ffff:100.64.0.1` compares as `100.64.0.1`. */
@@ -777,6 +839,8 @@ export function startHttpServer(deps: HttpServerDeps): Promise<HttpServer> {
     settings,
     waveCoordinator,
   } = deps;
+  const runStore = deps.runStore ?? new RunStore(db, events);
+  const pipelineFeedWaitRegistry = new PipelineFeedWaitRegistry(events, runStore);
   const featureQueue = deps.featureQueue ?? new FeatureQueueStore(db);
   const notify = deps.notify;
   const attachmentStore = new AttachmentStore(db);
@@ -802,6 +866,16 @@ export function startHttpServer(deps: HttpServerDeps): Promise<HttpServer> {
   // operator can confirm a remote device actually reached the daemon.
   let loggedFirstRemote = false;
 
+  // Only listeners that actually bound; a degraded specific-host listener is
+  // dropped so `close()` never trips on a server that isn't running. Declared
+  // here (ahead of the listener setup below) so `/api/status` reports the live
+  // bound set rather than the configured one — the two differ when the
+  // Tailscale address wasn't assigned at boot.
+  const boundServers: { host: string; server: ReturnType<typeof createServer> }[] = [];
+  const boundAddresses = (): string[] => boundServers.map((s) => s.host);
+  const unboundHosts = (): string[] =>
+    bindHosts.filter((h) => !boundServers.some((s) => s.host === h));
+
   const statusPayload = () => {
     const snap = updates?.snapshot();
     return {
@@ -810,7 +884,8 @@ export function startHttpServer(deps: HttpServerDeps): Promise<HttpServer> {
       pid: process.pid,
       port,
       host,
-      bindAddresses: bindHosts,
+      bindAddresses: boundAddresses(),
+      unboundHosts: unboundHosts(),
       allowedIps,
       remoteAuth: Boolean(controlToken),
       mode: DEV_VITE_TARGET ? ("dev" as const) : ("prod" as const),
@@ -825,6 +900,7 @@ export function startHttpServer(deps: HttpServerDeps): Promise<HttpServer> {
             updateState: snap.updateState,
             lastCheckedAt: snap.lastCheckedAt,
             releaseUrl: snap.releaseUrl,
+            runningNode: snap.runningNode,
           }
         : {}),
     };
@@ -1140,30 +1216,35 @@ export function startHttpServer(deps: HttpServerDeps): Promise<HttpServer> {
           sendJson(res, 404, { error: "workspace not found" });
           return;
         }
-        const preconditions = computeWorkspacePreconditions(
-          workspaceId,
-          workspace.path
-        );
-        if (!preconditions.gitRepo) {
-          sendJson(res, 400, {
-            error: "workspace is not a git repository",
-          });
-          return;
-        }
-        if (!preconditions.roadmapIndex) {
-          sendJson(res, 404, {
-            error: "roadmap index not found",
-          });
-          return;
-        }
+        const bounds = {
+          maxBytes: settings.maxFileViewerBytes,
+          maxEntries: settings.maxFileViewerEntries,
+        };
+        let readinessInputs;
         try {
+          readinessInputs = gatherRoadmapReadinessInputs(
+            workspace.path,
+            bounds
+          );
+          const readinessReport = analyzeRoadmapReadiness(readinessInputs);
+          assertKickoffReadinessAllowed(readinessReport, input);
           const resolved: ResolveImplementFullyKickoffResponse =
-            resolveImplementFullyKickoff(workspace.path, input, {
-              maxBytes: settings.maxFileViewerBytes,
-              maxEntries: settings.maxFileViewerEntries,
-            });
+            resolveImplementFullyKickoff(
+              workspace.path,
+              input,
+              bounds,
+              readinessInputs
+            );
           sendJson(res, 200, resolved);
         } catch (err) {
+          if (err instanceof KickoffReadinessError) {
+            sendJson(
+              res,
+              err.category === "bad_request" ? 400 : 404,
+              { error: err.message }
+            );
+            return;
+          }
           if (err instanceof RoadmapResolveError) {
             sendJson(
               res,
@@ -1316,12 +1397,118 @@ export function startHttpServer(deps: HttpServerDeps): Promise<HttpServer> {
             });
             return;
           }
+          const bounds = {
+            maxBytes: settings.maxFileViewerBytes,
+            maxEntries: settings.maxFileViewerEntries,
+          };
           introspection.preconditions = computeWorkspacePreconditions(
             workspaceIdParam,
-            lookup.path
+            lookup.path,
+            {
+              roadmapReadiness: analyzeWorkspaceRoadmapReadiness(
+                lookup.path,
+                bounds
+              ),
+            }
           );
         }
         sendJson(res, 200, introspection);
+        return;
+      }
+
+      if (url.pathname === "/api/roadmap-readiness") {
+        if (method !== "GET") {
+          sendJson(res, 404, { error: "not found" });
+          return;
+        }
+        const bounds = {
+          maxBytes: settings.maxFileViewerBytes,
+          maxEntries: settings.maxFileViewerEntries,
+        };
+        sendJson(
+          res,
+          200,
+          summarizeAllWorkspacesRoadmapReadiness(
+            store.listWorkspaces(),
+            bounds
+          )
+        );
+        return;
+      }
+
+      const roadmapReadinessMatch = url.pathname.match(
+        /^\/api\/workspaces\/([^/]+)\/roadmap-readiness$/
+      );
+      if (roadmapReadinessMatch) {
+        if (method !== "GET") {
+          sendJson(res, 404, { error: "not found" });
+          return;
+        }
+        const workspaceId = decodeURIComponent(roadmapReadinessMatch[1]!);
+        const workspace = assertRunnableWorkspace(store, workspaceId);
+        if (!workspace) {
+          sendJson(res, 404, { error: "workspace not found" });
+          return;
+        }
+        try {
+          sendJson(
+            res,
+            200,
+            analyzeWorkspaceRoadmapReadiness(workspace.path, {
+              maxBytes: settings.maxFileViewerBytes,
+              maxEntries: settings.maxFileViewerEntries,
+            })
+          );
+        } catch (err) {
+          if (err instanceof FileViewerError) {
+            sendJson(
+              res,
+              err.code === "bad_request" ? 400 : 404,
+              { error: err.message }
+            );
+            return;
+          }
+          throw err;
+        }
+        return;
+      }
+
+      const roadmapFixPlanMatch = url.pathname.match(
+        /^\/api\/workspaces\/([^/]+)\/roadmap-fix-plan$/
+      );
+      if (roadmapFixPlanMatch) {
+        if (method !== "GET") {
+          sendJson(res, 404, { error: "not found" });
+          return;
+        }
+        const workspaceId = decodeURIComponent(roadmapFixPlanMatch[1]!);
+        const workspace = assertRunnableWorkspace(store, workspaceId);
+        if (!workspace) {
+          sendJson(res, 404, { error: "workspace not found" });
+          return;
+        }
+        try {
+          const bounds = {
+            maxBytes: settings.maxFileViewerBytes,
+            maxEntries: settings.maxFileViewerEntries,
+          };
+          const plan = buildWorkspaceRoadmapFixPlan(
+            workspaceId,
+            workspace.path,
+            bounds
+          );
+          sendJson(res, 200, plan);
+        } catch (err) {
+          if (err instanceof FileViewerError) {
+            sendJson(
+              res,
+              err.code === "bad_request" ? 400 : 404,
+              { error: err.message }
+            );
+            return;
+          }
+          throw err;
+        }
         return;
       }
 
@@ -1611,6 +1798,39 @@ export function startHttpServer(deps: HttpServerDeps): Promise<HttpServer> {
                 }
               : {}),
           });
+          if (featureQueue && hasContext) {
+            const summary = pipelineSummaryFromContext({
+              variables: data.variables ?? {},
+              roleModels: data.roleModels ?? {},
+            });
+            if (summary && isImplementFullyContext(summary.pipelineId)) {
+              const run = store.getRun(runId);
+              if (run) {
+                try {
+                  const result = featureQueue.recordDirectKickoff({
+                    workspaceId: run.workspaceId,
+                    featureId: summary.featureId,
+                    runId,
+                    kickoff: data,
+                  });
+                  if (result === "skipped-active") {
+                    deps.onLog?.(
+                      `Direct kickoff queue row skipped: ${summary.featureId} already active in ${run.workspaceId}`
+                    );
+                  } else if (result === "skipped-duplicate-run") {
+                    deps.onLog?.(
+                      `Direct kickoff queue row skipped: run ${runId} already recorded`
+                    );
+                  }
+                } catch (err) {
+                  const text = err instanceof Error ? err.message : String(err);
+                  deps.onLog?.(
+                    `Direct kickoff queue record failed for ${summary.featureId}: ${text}`
+                  );
+                }
+              }
+            }
+          }
           sendJson(res, 201, { runId });
         } catch (err) {
           if (err instanceof TriggerRunValidationError) {
@@ -2174,6 +2394,217 @@ export function startHttpServer(deps: HttpServerDeps): Promise<HttpServer> {
         return;
       }
 
+      if (method === "GET" && url.pathname === "/api/pipeline-runs") {
+        const workspaceId = url.searchParams.get("workspace")?.trim() ?? "";
+        const featureId = url.searchParams.get("feature")?.trim() ?? "";
+        if (!workspaceId || !featureId) {
+          sendJson(res, 400, {
+            error: "workspace and feature query parameters are required",
+          });
+          return;
+        }
+        const resolved = resolvePipelineSnapshotByFeature(
+          runStore,
+          store,
+          workspaceId,
+          featureId,
+          Date.now()
+        );
+        if (!resolved) {
+          sendJson(res, 404, { error: "pipeline run not found" });
+          return;
+        }
+        sendJson(res, 200, resolved);
+        return;
+      }
+
+      const pipelineEventsMatch = url.pathname.match(
+        /^\/api\/pipeline-runs\/([^/]+)\/events$/
+      );
+      if (pipelineEventsMatch && method === "GET") {
+        const rootRunId = decodeURIComponent(pipelineEventsMatch[1]);
+        const sinceParsed = parsePipelineFeedSinceParam(
+          url.searchParams.get("since")
+        );
+        if (sinceParsed === "invalid") {
+          sendJson(res, 400, { error: "invalid since cursor" });
+          return;
+        }
+        const waitParsed = parsePipelineFeedWaitParam(
+          url.searchParams.get("wait")
+        );
+        if (waitParsed === "invalid") {
+          sendJson(res, 400, { error: "invalid wait seconds" });
+          return;
+        }
+        const abortController = new AbortController();
+        req.on("close", () => abortController.abort());
+        req.on("aborted", () => abortController.abort());
+        try {
+          const feed = await pollPipelineFeed(
+            runStore,
+            store,
+            pipelineFeedWaitRegistry,
+            rootRunId,
+            sinceParsed,
+            waitParsed,
+            abortController.signal
+          );
+          if (abortController.signal.aborted) {
+            return;
+          }
+          if (!feed) {
+            sendJson(res, 404, { error: "pipeline run not found" });
+            return;
+          }
+          sendJson(res, 200, feed);
+        } catch (err) {
+          if (abortController.signal.aborted) {
+            return;
+          }
+          throw err;
+        }
+        return;
+      }
+
+      const pipelineStopMatch = url.pathname.match(
+        /^\/api\/pipeline-runs\/([^/]+)\/stop$/
+      );
+      if (pipelineStopMatch && method === "POST") {
+        const rootRunId = decodeURIComponent(pipelineStopMatch[1]);
+        const body = await readJson<unknown>(req);
+        let actorId: string | undefined;
+        try {
+          actorId = resolveOperatorActorId(req, body);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          sendJson(res, 400, { error: message });
+          return;
+        }
+        const bodyRecord =
+          typeof body === "object" && body != null && !Array.isArray(body)
+            ? (body as Record<string, unknown>)
+            : {};
+        const reason =
+          typeof bodyRecord.reason === "string" ? bodyRecord.reason : undefined;
+        const result = applyPipelineStopAfterStep({
+          store: runStore,
+          dashboardStore: store,
+          engine,
+          rootRunId,
+          ...(reason !== undefined ? { reason } : {}),
+          ...(actorId ? { actorId } : {}),
+        });
+        if (!result.ok) {
+          const status =
+            result.reason === "validation"
+              ? 400
+              : pipelineSteeringHttpStatus(
+                  result.reason as Exclude<
+                    typeof result.reason,
+                    "validation"
+                  >
+                );
+          sendJson(res, status, { error: result.message });
+          return;
+        }
+        sendJson(res, 200, {
+          rootRunId: result.rootRunId,
+          frontierRunId: result.frontierRunId,
+          stopReason: result.stopReason,
+          snapshot: result.snapshot,
+          cursor: result.cursor,
+        });
+        return;
+      }
+
+      const pipelineDirectivesMatch = url.pathname.match(
+        /^\/api\/pipeline-runs\/([^/]+)\/directives$/
+      );
+      if (pipelineDirectivesMatch && method === "POST") {
+        const rootRunId = decodeURIComponent(pipelineDirectivesMatch[1]);
+        const body = await readJson<unknown>(req);
+        let actorId: string | undefined;
+        try {
+          actorId = resolveOperatorActorId(req, body);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          sendJson(res, 400, { error: message });
+          return;
+        }
+        const bodyRecord =
+          typeof body === "object" && body != null && !Array.isArray(body)
+            ? (body as Record<string, unknown>)
+            : {};
+        const kind = bodyRecord.kind;
+        if (kind !== "note" && kind !== "role-override") {
+          sendJson(res, 400, { error: "kind must be note or role-override" });
+          return;
+        }
+        const request =
+          kind === "note"
+            ? {
+                kind: "note" as const,
+                text:
+                  typeof bodyRecord.text === "string" ? bodyRecord.text : "",
+              }
+            : {
+                kind: "role-override" as const,
+                roleModels:
+                  typeof bodyRecord.roleModels === "object" &&
+                  bodyRecord.roleModels != null &&
+                  !Array.isArray(bodyRecord.roleModels)
+                    ? (bodyRecord.roleModels as Record<string, ModelSelection>)
+                    : {},
+              };
+        const result = await appendPipelineDirectiveForRoot({
+          store: runStore,
+          dashboardStore: store,
+          engine,
+          rootRunId,
+          request,
+          ...(actorId ? { actorId } : {}),
+        });
+        if (!result.ok) {
+          const status =
+            result.reason === "validation"
+              ? 400
+              : pipelineSteeringHttpStatus(
+                  result.reason as Exclude<
+                    typeof result.reason,
+                    "validation"
+                  >
+                );
+          sendJson(res, status, { error: result.message });
+          return;
+        }
+        sendJson(res, 200, {
+          id: result.id,
+          kind: result.kind,
+          rootRunId: result.rootRunId,
+          snapshot: result.snapshot,
+          cursor: result.cursor,
+        });
+        return;
+      }
+
+      const pipelineRunMatch = url.pathname.match(/^\/api\/pipeline-runs\/([^/]+)$/);
+      if (pipelineRunMatch && method === "GET") {
+        const rootRunId = decodeURIComponent(pipelineRunMatch[1]);
+        const snapshot = hydratePipelineSnapshot(
+          runStore,
+          store,
+          rootRunId,
+          Date.now()
+        );
+        if (!snapshot) {
+          sendJson(res, 404, { error: "pipeline run not found" });
+          return;
+        }
+        sendJson(res, 200, { rootRunId, snapshot });
+        return;
+      }
+
       const runMatch = url.pathname.match(/^\/api\/runs\/([^/]+)$/);
       if (runMatch) {
         const runId = decodeURIComponent(runMatch[1]);
@@ -2519,8 +2950,20 @@ export function startHttpServer(deps: HttpServerDeps): Promise<HttpServer> {
           sendJson(res, 400, { error: formatIssues(parsed.error.issues) });
           return;
         }
+        let actorId: string | undefined;
         try {
-          const result = await engine.escalateRun(runId, parsed.data);
+          actorId = resolveOperatorActorId(req, body);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          sendJson(res, 400, { error: message });
+          return;
+        }
+        const escalationRequest = {
+          ...parsed.data,
+          ...(actorId ? { actorId } : {}),
+        };
+        try {
+          const result = await engine.escalateRun(runId, escalationRequest);
           if (!result.ok) {
             if (result.reason === "not-found") {
               sendJson(res, 404, {
@@ -2554,8 +2997,16 @@ export function startHttpServer(deps: HttpServerDeps): Promise<HttpServer> {
           sendJson(res, 400, { error: message });
           return;
         }
+        let actorId: string | undefined;
         try {
-          await engine.submitAnswer(runId, parsed.data.answer);
+          actorId = resolveOperatorActorId(req, body);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          sendJson(res, 400, { error: message });
+          return;
+        }
+        try {
+          await engine.submitAnswer(runId, parsed.data.answer, actorId);
           sendJson(res, 200, { ok: true });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
@@ -2590,8 +3041,17 @@ export function startHttpServer(deps: HttpServerDeps): Promise<HttpServer> {
           return;
         }
 
+        let actorId: string | undefined;
         try {
-          await engine.sendMessage(runId, message, attachments);
+          actorId = resolveOperatorActorId(req, body);
+        } catch (err) {
+          sendJson(res, 400, {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          return;
+        }
+        try {
+          await engine.sendMessage(runId, message, attachments, actorId);
           const response: SendRunMessageResponse = { ok: true };
           sendJson(res, 202, response);
         } catch (err) {
@@ -2629,8 +3089,22 @@ export function startHttpServer(deps: HttpServerDeps): Promise<HttpServer> {
           return;
         }
 
+        let actorId: string | undefined;
         try {
-          const queuedMessageId = await engine.queueMessage(runId, message, attachments);
+          actorId = resolveOperatorActorId(req, body);
+        } catch (err) {
+          sendJson(res, 400, {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          return;
+        }
+        try {
+          const queuedMessageId = await engine.queueMessage(
+            runId,
+            message,
+            attachments,
+            actorId
+          );
           const response: QueueRunMessageResponse = {
             ok: true,
             ...(queuedMessageId ? { queuedMessageId } : {}),
@@ -2669,8 +3143,17 @@ export function startHttpServer(deps: HttpServerDeps): Promise<HttpServer> {
           return;
         }
 
+        let actorId: string | undefined;
         try {
-          await engine.interruptRun(runId, message, attachments);
+          actorId = resolveOperatorActorId(req, body);
+        } catch (err) {
+          sendJson(res, 400, {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          return;
+        }
+        try {
+          await engine.interruptRun(runId, message, attachments, actorId);
           const response: InterruptRunResponse = { ok: true };
           sendJson(res, 202, response);
         } catch (err) {
@@ -2683,7 +3166,17 @@ export function startHttpServer(deps: HttpServerDeps): Promise<HttpServer> {
       const cancelMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/cancel$/);
       if (cancelMatch && method === "POST") {
         const runId = decodeURIComponent(cancelMatch[1]);
-        await engine.cancelRun(runId);
+        const body = await readJson<unknown>(req);
+        let actorId: string | undefined;
+        try {
+          actorId = resolveOperatorActorId(req, body);
+        } catch (err) {
+          sendJson(res, 400, {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          return;
+        }
+        await engine.cancelRun(runId, actorId);
         sendJson(res, 200, { ok: true });
         return;
       }
@@ -2691,8 +3184,18 @@ export function startHttpServer(deps: HttpServerDeps): Promise<HttpServer> {
       const pauseMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/pause$/);
       if (pauseMatch && method === "POST") {
         const runId = decodeURIComponent(pauseMatch[1]);
+        const body = await readJson<unknown>(req);
+        let actorId: string | undefined;
         try {
-          await engine.pauseRun(runId);
+          actorId = resolveOperatorActorId(req, body);
+        } catch (err) {
+          sendJson(res, 400, {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          return;
+        }
+        try {
+          await engine.pauseRun(runId, actorId);
           const response: PauseRunResponse = { ok: true };
           sendJson(res, 200, response);
         } catch (err) {
@@ -2710,8 +3213,17 @@ export function startHttpServer(deps: HttpServerDeps): Promise<HttpServer> {
           typeof body.note === "string" && body.note.trim()
             ? body.note.trim()
             : undefined;
+        let actorId: string | undefined;
         try {
-          await engine.resumeRun(runId, note);
+          actorId = resolveOperatorActorId(req, body);
+        } catch (err) {
+          sendJson(res, 400, {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          return;
+        }
+        try {
+          await engine.resumeRun(runId, note, actorId);
           const response: ResumeRunResponse = { ok: true };
           sendJson(res, 202, response);
         } catch (err) {
@@ -2900,12 +3412,17 @@ export function startHttpServer(deps: HttpServerDeps): Promise<HttpServer> {
     return { host: bindHost, server: srv };
   });
 
-  // Only listeners that actually bound; a degraded specific-host listener is
-  // dropped so `close()` never trips on a server that isn't running.
-  const boundServers: { host: string; server: ReturnType<typeof createServer> }[] = [];
+  // Pending background rebinds for hosts that degraded at boot, keyed by host.
+  const rebindTimers = new Map<string, NodeJS.Timeout>();
+  let closed = false;
 
   const close = (): Promise<void> =>
     new Promise((res, rej) => {
+      closed = true;
+      for (const timer of rebindTimers.values()) {
+        clearTimeout(timer);
+      }
+      rebindTimers.clear();
       // A phone leaves a persistent `/ws` connection (plus keep-alive HTTP
       // sockets) open across a restart. `server.close()` only stops accepting
       // new connections — its callback waits for every existing connection to
@@ -2918,6 +3435,7 @@ export function startHttpServer(deps: HttpServerDeps): Promise<HttpServer> {
         client.terminate();
       }
       clearInterval(heartbeat);
+      pipelineFeedWaitRegistry.close();
       wss.close();
       if (boundServers.length === 0) {
         res();
@@ -2957,10 +3475,86 @@ export function startHttpServer(deps: HttpServerDeps): Promise<HttpServer> {
         resolve({
           port,
           host,
-          bindAddresses: boundServers.map((s) => s.host),
+          get bindAddresses() {
+            return boundAddresses();
+          },
+          get unboundHosts() {
+            return unboundHosts();
+          },
           close,
         });
       }
+    };
+
+    // One bind attempt with paired one-shot handlers. `server.listen(..., cb)`
+    // registers `cb` via `once("listening")` and never removes it on error, so
+    // a retry loop that passes a callback each time accumulates them and fires
+    // every stale callback on the eventual success (duplicate `boundServers`
+    // entries, double `close()`). Registering both sides here and detaching the
+    // loser keeps each attempt independent.
+    const listenOnce = (
+      server: ReturnType<typeof createServer>,
+      bindHost: string,
+      onListening: () => void,
+      onError: (err: NodeJS.ErrnoException) => void
+    ): void => {
+      const listening = (): void => {
+        server.removeListener("error", errored);
+        onListening();
+      };
+      const errored = (err: NodeJS.ErrnoException): void => {
+        server.removeListener("listening", listening);
+        onError(err);
+      };
+      server.once("listening", listening);
+      server.once("error", errored);
+      server.listen(port, bindHost);
+    };
+
+    // A specific host that wasn't assigned at boot (Tailscale still coming up
+    // after a reboot) is retried in the background until it binds, so remote
+    // access recovers without an operator restart. Only `EADDRNOTAVAIL` keeps
+    // retrying; any other code gives up loudly. Timers are unref'd so they
+    // never hold the process open, and `close()` cancels them.
+    const scheduleRebind = (
+      bindHost: string,
+      server: ReturnType<typeof createServer>
+    ): void => {
+      if (closed) return;
+      const timer = setTimeout(() => {
+        rebindTimers.delete(bindHost);
+        if (closed) return;
+        listenOnce(
+          server,
+          bindHost,
+          () => {
+            if (closed) {
+              server.close();
+              return;
+            }
+            boundServers.push({ host: bindHost, server });
+            log(
+              `Bind ${bindHost}:${port} recovered — remote access restored; ` +
+                `now listening on ${boundAddresses()
+                  .map((addr) => `http://${addr}:${port}`)
+                  .join(", ")}`
+            );
+          },
+          (err) => {
+            if (closed) return;
+            if (isDegradableBindError(err, bindHost)) {
+              scheduleRebind(bindHost, server);
+              return;
+            }
+            log(
+              `Bind ${bindHost}:${port} retry failed (${err.code}) — giving up; ` +
+                `remote access stays off until the daemon restarts`
+            );
+          }
+        );
+      }, REBIND_RETRY_MS);
+      timer.unref?.();
+      rebindTimers.set(bindHost, timer);
     };
     // A relaunched daemon (e.g. a phone-triggered restart) can momentarily race
     // the outgoing daemon's socket release; retry EADDRINUSE a bounded number of
@@ -2978,9 +3572,11 @@ export function startHttpServer(deps: HttpServerDeps): Promise<HttpServer> {
         if (settled) return;
         if (isDegradableBindError(err, bindHost)) {
           log(
-            `Bind ${bindHost}:${port} failed (${err.code}) — serving loopback only. ` +
-              `Restore with: lca remote off && lca up (or once the interface is up)`
+            `Bind ${bindHost}:${port} failed (${err.code}) — serving loopback only; ` +
+              `retrying every ${REBIND_RETRY_MS / 1000}s until the interface is up. ` +
+              `To stop retrying: lca remote off && lca restart`
           );
+          scheduleRebind(bindHost, server);
           finishOne();
           return;
         }
@@ -3008,14 +3604,17 @@ export function startHttpServer(deps: HttpServerDeps): Promise<HttpServer> {
         }
         reject(err);
       };
-      server.once("error", onError);
-      server.listen(port, bindHost, () => {
-        // Drop the bind-time error handler so a later runtime error can't be
-        // mistaken for a failed (and retryable) bind.
-        server.removeListener("error", onError);
-        boundServers.push({ host: bindHost, server });
-        finishOne();
-      });
+      // `listenOnce` drops the bind-time error handler on success so a later
+      // runtime error can't be mistaken for a failed (and retryable) bind.
+      listenOnce(
+        server,
+        bindHost,
+        () => {
+          boundServers.push({ host: bindHost, server });
+          finishOne();
+        },
+        onError
+      );
     };
 
     for (const { host: bindHost, server } of servers) {

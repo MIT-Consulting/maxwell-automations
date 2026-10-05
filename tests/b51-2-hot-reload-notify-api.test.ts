@@ -186,7 +186,7 @@ describe("b51 phase 2 — hot-reload notify API", () => {
     }
   });
 
-  it("GET masks token and returns materialized thirteen-event prefs", async () => {
+  it("GET masks token and returns materialized fourteen-event prefs", async () => {
     await bootstrapNotifyHttp(
       [
         "settings:",
@@ -210,7 +210,7 @@ describe("b51 phase 2 — hot-reload notify API", () => {
           defaults: Record<string, unknown>;
           usable: { ntfy: boolean };
         };
-        expect(Object.keys(body.events)).toHaveLength(13);
+        expect(Object.keys(body.events)).toHaveLength(14);
         expect(body.events.needs_input).toEqual({ toast: true, ntfy: false });
         expect(body.ntfy).toEqual({
           topic: FAKE_TOPIC,

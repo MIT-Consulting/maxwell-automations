@@ -60,6 +60,7 @@ import { ChainRunner } from "../packages/daemon/src/runs/chain-runner.ts";
 import { RunEngine } from "../packages/daemon/src/runs/engine.ts";
 import { RunStore } from "../packages/daemon/src/runs/store.ts";
 import { TriggerManager } from "../packages/daemon/src/triggers/manager.ts";
+import { emptyFeatureIndex } from "./helpers/empty-tracker.ts";
 import { freeListenPort } from "./helpers/free-port.ts";
 
 afterEach(() => {
@@ -127,7 +128,7 @@ function writeRoadmapIndex(workspacePath: string): void {
   );
   const featureDir = join(workspacePath, "docs", "roadmap", DOCUMENTED_SLUG);
   mkdirSync(featureDir, { recursive: true });
-  writeFileSync(join(featureDir, "00-index.md"), "# b56\n", "utf8");
+  writeFileSync(join(featureDir, "00-index.md"), emptyFeatureIndex("b56"), "utf8");
   writeFileSync(join(featureDir, "prd.md"), "# prd\n", "utf8");
 }
 
@@ -653,10 +654,36 @@ describe("b56.7 research worker least authority", () => {
       maxConcurrentRuns: 4,
     });
 
+    // Manual generated triggers need chain context (b86); tool-auth is what
+    // this case asserts, not kickoff refusal.
+    const toolAuthChain = {
+      chainContext: {
+        variables: {
+          pipelineId: IMPLEMENT_FULLY_PIPELINE_ID,
+          featureId: "b56",
+          featureSlug: "b56-tool-auth",
+          featureDir: "docs/roadmap/b56-tool-auth",
+          featureIndex: "docs/roadmap/b56-tool-auth/00-index.md",
+          idea: "prove research tool auth",
+          planningDepth: "jit",
+          approvalPolicy: "none",
+          researchApprovalPolicy: "none",
+        },
+        roleModels: {
+          planner: { id: "planner-model" } satisfies ModelSelection,
+          implementer: { id: "implementer-model" } satisfies ModelSelection,
+          reviewer: { id: "reviewer-model" } satisfies ModelSelection,
+          docs: { id: "docs-model" } satisfies ModelSelection,
+        },
+      },
+      chainMaxDepth: 3,
+    } as const;
+
     try {
       const researchId = await engine.triggerRun(
         byKey.get(IMPLEMENT_FULLY_RESEARCH_WORKER_KEY)!,
-        "manual"
+        "manual",
+        toolAuthChain
       );
       await until(() => spawns.some((s) => s.runId === researchId));
       expect(
@@ -672,7 +699,11 @@ describe("b56.7 research worker least authority", () => {
         IMPLEMENT_FULLY_FINAL_GATE_WORKER_KEY,
       ] as const;
       for (const key of unrestricted) {
-        const runId = await engine.triggerRun(byKey.get(key)!, "manual");
+        const runId = await engine.triggerRun(
+          byKey.get(key)!,
+          "manual",
+          toolAuthChain
+        );
         await until(() => spawns.some((s) => s.runId === runId));
         expect(
           spawns.find((s) => s.runId === runId)?.automationsIoTools

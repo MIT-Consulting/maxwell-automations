@@ -277,7 +277,7 @@ describe("b53 phase 2 — dashboard Other affordance", () => {
 
 describe("b53 phase 2 — run onNotify replace-not-double composition", () => {
   it("chains halt-discovery then plan-approval then generic needsInput", () => {
-    const indexSrc = readSrc("packages/daemon/src/index.ts");
+    const indexSrc = readSrc("packages/daemon/src/daemon.ts");
     const onNotifyIdx = indexSrc.indexOf("onNotify:");
     const chatIdx = indexSrc.indexOf("onChatNeedsInput:");
     expect(onNotifyIdx).toBeGreaterThan(-1);

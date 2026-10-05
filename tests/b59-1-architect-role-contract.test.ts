@@ -214,7 +214,7 @@ describe("b59.1 CLI help mentions architect", () => {
   it("lists architect among optional roles in help text", () => {
     const helpPath = resolve(
       import.meta.dirname,
-      "../packages/cli/src/index.ts"
+      "../packages/cli/src/cli.ts"
     );
     const text = readFileSync(helpPath, "utf8");
     expect(text).toMatch(/optional researcher, gatekeeper, and architect/i);

@@ -7,6 +7,13 @@ import { CHAIN_VALUE_MAX_LENGTH } from "./schemas/run.js";
 import type { ModelSelection } from "./model.js";
 import type { ChainVariables } from "./types/config.js";
 import {
+  DEFAULT_FEATURE_FORMAT_TEMPLATE,
+  isRoadmapIdCandidate,
+  isValidFeatureSlug,
+  ROADMAP_FORMAT_DOC,
+  slugFeaturePrefix,
+} from "./roadmap-ids.js";
+import {
   DEFAULT_IMPLEMENT_FULLY_PLANNING_PROFILE_ID,
   IMPLEMENT_FULLY_APPROVAL_POLICIES,
   IMPLEMENT_FULLY_PIPELINE_ID,
@@ -25,9 +32,6 @@ import {
   type PipelineIntrospectionResponse,
   type PipelineModelRole,
 } from "./types/api.js";
-
-const FEATURE_RE = /^b\d+$/;
-const SLUG_RE = /^b\d+-[a-z0-9]+(-[a-z0-9]+)*$/;
 
 const ACTIVE_PIPELINE_STATUSES = new Set([
   "queued",
@@ -68,6 +72,8 @@ export type KickoffVariables = {
   approvalPolicy: ImplementFullyApprovalPolicy;
   researchApprovalPolicy: ImplementFullyResearchApprovalPolicy;
   loopMode: ImplementFullyLoopMode;
+  /** Display-only kickoff recipe id; not in IMPLEMENT_FULLY_VARIABLES. */
+  roleModelProfileId?: string;
 };
 
 export type ActivePipelineBlocker = {
@@ -113,19 +119,24 @@ export function validateFeatureSlugIdea(
   slug: string,
   idea: string
 ): void {
-  if (!FEATURE_RE.test(feature)) {
+  if (!isRoadmapIdCandidate(feature)) {
     throw new KickoffError(
-      `Invalid --feature "${feature}". Expected ^b\\d+$ (e.g. b42).`
-    );
-  }
-  if (!SLUG_RE.test(slug)) {
-    throw new KickoffError(
-      `Invalid --slug "${slug}". Expected ^b\\d+-[a-z0-9]+(-[a-z0-9]+)*$ (e.g. b42-my-feature).`
+      `Invalid --feature "${feature}". Expected ${DEFAULT_FEATURE_FORMAT_TEMPLATE} (e.g. b42, b-dm58). See ${ROADMAP_FORMAT_DOC}.`
     );
   }
   if (!slug.startsWith(`${feature}-`)) {
+    if (slugFeaturePrefix(slug)) {
+      throw new KickoffError(
+        `Slug "${slug}" must start with "${feature}-" (feature=${feature}).`
+      );
+    }
     throw new KickoffError(
-      `Slug "${slug}" must start with "${feature}-" (feature=${feature}).`
+      `Invalid --slug "${slug}". Expected ${feature}-<slug-segments> (e.g. ${feature}-my-feature).`
+    );
+  }
+  if (!isValidFeatureSlug(feature, slug)) {
+    throw new KickoffError(
+      `Invalid --slug "${slug}". Expected ${feature}-<slug-segments> (e.g. ${feature}-my-feature).`
     );
   }
   const trimmed = idea.trim();
@@ -263,12 +274,19 @@ export function normalizeImplementFullyChainVariables(
       researchApprovalPolicyRaw as ImplementFullyResearchApprovalPolicy;
   }
 
+  const roleModelProfileIdRaw = variables.roleModelProfileId;
+  const roleModelProfileId =
+    typeof roleModelProfileIdRaw === "string" && roleModelProfileIdRaw.length > 0
+      ? roleModelProfileIdRaw
+      : undefined;
+
   return {
     ...variables,
     planningDepth,
     approvalPolicy,
     researchApprovalPolicy,
     loopMode,
+    ...(roleModelProfileId ? { roleModelProfileId } : {}),
   };
 }
 

@@ -46,9 +46,11 @@ import {
 } from "./pipelineKickoff";
 import {
   filterRoadmapFeatures,
+  mergeReadinessDisabledFeatures,
   parseRoadmapFeatures,
   type RoadmapFeatureSummary,
 } from "./roadmapFeatures";
+import { describeKickoffReadinessBlockers } from "./roadmapReadinessUi";
 import { ModelSelect } from "./ModelSelect";
 import { useAvailableModels } from "./useAvailableModels";
 import { useIsNarrowViewport } from "./useIsNarrowViewport";
@@ -252,6 +254,7 @@ export function PipelineKickoffModal({
   const [reviewFacts, setReviewFacts] = useState<KickoffReviewFacts | null>(
     null
   );
+  const [readinessNotes, setReadinessNotes] = useState<string[]>([]);
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -263,6 +266,7 @@ export function PipelineKickoffModal({
     setDryPlan(null);
     setBlockerNote(null);
     setReviewFacts(null);
+    setReadinessNotes([]);
     setPhase("what");
     setProfileId(DEFAULT_IMPLEMENT_FULLY_PLANNING_PROFILE_ID);
     setRoleProfileId(DEFAULT_ROLE_MODEL_PROFILE_ID);
@@ -291,8 +295,11 @@ export function PipelineKickoffModal({
     };
   }, [workspaceId]);
 
-  // Best-effort feature list for the searchable picker — a fetch/parse miss
-  // just means no suggestions; typing a raw id still works either way.
+  const readinessReport = introspection?.preconditions?.roadmapReadiness;
+
+  // Picker list follows the shared roadmap parser plus readiness disabled rows.
+  // A fetch miss leaves the field usable for a typed id; a parse/declaration
+  // error is shown.
   useEffect(() => {
     if (!workspaceId) {
       setRoadmapFeatures([]);
@@ -302,17 +309,34 @@ export function PipelineKickoffModal({
     void api
       .getWorkspaceFileContent(workspaceId, "docs/roadmap/00-index.md")
       .then((res) => {
-        if (!cancelled && res.content) {
-          setRoadmapFeatures(parseRoadmapFeatures(res.content));
+        if (cancelled) return;
+        let parsed: RoadmapFeatureSummary[] = [];
+        if (res.content) {
+          try {
+            parsed = parseRoadmapFeatures(res.content);
+          } catch (err) {
+            setRoadmapFeatures([]);
+            setValidationError(
+              err instanceof Error ? err.message : String(err)
+            );
+            return;
+          }
         }
+        setRoadmapFeatures(
+          mergeReadinessDisabledFeatures(parsed, readinessReport)
+        );
       })
       .catch(() => {
-        if (!cancelled) setRoadmapFeatures([]);
+        if (!cancelled) {
+          setRoadmapFeatures(
+            mergeReadinessDisabledFeatures([], readinessReport)
+          );
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [workspaceId]);
+  }, [workspaceId, readinessReport]);
 
   const modelOptions = useMemo(
     () => models.map((m) => m.id).filter(Boolean),
@@ -425,6 +449,7 @@ export function PipelineKickoffModal({
     setDryPlan(null);
     setBlockerNote(null);
     setReviewFacts(null);
+    setReadinessNotes([]);
   };
 
   /** Local validation for the "what" step — no API calls, just presence checks. */
@@ -432,6 +457,16 @@ export function PipelineKickoffModal({
     if (!workspaceId) return "Select a workspace.";
     if (inputKind === "feature-id" && !featureId.trim()) {
       return "Pick an existing feature, or switch to New idea.";
+    }
+    if (
+      inputKind === "feature-id" &&
+      pickedFeature &&
+      !pickedFeature.selectable
+    ) {
+      return (
+        pickedFeature.disabledReason ??
+        `${pickedFeature.id} cannot be used as a feature.`
+      );
     }
     if (inputKind === "idea" && !idea.trim()) {
       return "Describe what to build, or switch to Existing feature.";
@@ -460,18 +495,24 @@ export function PipelineKickoffModal({
       );
       return;
     }
-    if (!pre.gitRepo) {
+    if (!pre.roadmapReadiness) {
       setValidationError(
-        "Workspace is not a git repository (missing .git). Refuse to kick off."
+        "Roadmap readiness unavailable. Run max doctor or retry."
       );
       return;
     }
-    if (!pre.roadmapIndex) {
-      setValidationError(
-        "Missing roadmap index (docs/roadmap/00-index.md). Create it before kicking off."
-      );
+
+    const readinessGate = describeKickoffReadinessBlockers({
+      report: pre.roadmapReadiness,
+      roadmapIndexPresent: pre.roadmapIndex,
+      inputKind,
+      featureId,
+    });
+    if (readinessGate.blockers.length > 0) {
+      setValidationError(readinessGate.blockers.join("\n"));
       return;
     }
+    setReadinessNotes(readinessGate.notes);
 
     let resolveRequest;
     try {
@@ -887,9 +928,11 @@ export function PipelineKickoffModal({
                           <button
                             key={f.id}
                             type="button"
-                            className="flex w-full flex-col items-start gap-0 px-2.5 py-1.5 text-left text-xs hover:bg-accent hover:text-accent-foreground"
+                            disabled={!f.selectable}
+                            className="flex w-full flex-col items-start gap-0 px-2.5 py-1.5 text-left text-xs hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-50"
                             onMouseDown={(e) => e.preventDefault()}
                             onClick={() => {
+                              if (!f.selectable) return;
                               setFeatureId(f.id);
                               setFeatureQueryOpen(false);
                               setValidationError(null);
@@ -901,6 +944,11 @@ export function PipelineKickoffModal({
                             <span className="font-mono text-[10px] text-muted-foreground">
                               {f.id}
                             </span>
+                            {!f.selectable && f.disabledReason && (
+                              <span className="text-[10px] text-muted-foreground">
+                                {f.disabledReason}
+                              </span>
+                            )}
                           </button>
                         ))}
                       </RemoveScroll>,
@@ -908,7 +956,10 @@ export function PipelineKickoffModal({
                     )}
                   <p className="m-0 text-xs text-muted-foreground">
                     {pickedFeature
-                      ? `Picked ${pickedFeature.id} — ${pickedFeature.title}`
+                      ? pickedFeature.selectable
+                        ? `Picked ${pickedFeature.id} — ${pickedFeature.title}`
+                        : (pickedFeature.disabledReason ??
+                          `${pickedFeature.id} is not a kickoff target.`)
                       : "Resolves metadata from the selected workspace roadmap."}
                   </p>
                 </div>
@@ -1268,6 +1319,14 @@ export function PipelineKickoffModal({
                 Confirm & start — nothing written yet
               </p>
 
+              {readinessNotes.length > 0 && (
+                <ul className="m-0 flex list-none flex-col gap-1 rounded-md border border-border bg-muted/50 p-2.5 pl-2.5 text-muted-foreground">
+                  {readinessNotes.map((note) => (
+                    <li key={note}>{note}</li>
+                  ))}
+                </ul>
+              )}
+
               {resolved && (
                 <div className="flex flex-col gap-2 rounded-md border border-border bg-muted p-2.5 text-foreground">
                   <div>
@@ -1468,7 +1527,9 @@ export function PipelineKickoffModal({
           )}
 
           {validationError && (
-            <p className="m-0 text-xs text-destructive">{validationError}</p>
+            <p className="m-0 whitespace-pre-wrap text-xs text-destructive">
+              {validationError}
+            </p>
           )}
           {submitError && (
             <p className="m-0 text-xs text-destructive">{submitError}</p>

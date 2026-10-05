@@ -83,14 +83,16 @@ async function flushAsyncWork(): Promise<void> {
 
 describe("b52 phase 1 — catalog and notifier methods", () => {
   describe("shared catalog", () => {
-    it("includes b48 ids plus run_completed and pipeline_complete", () => {
+    it("includes b48 ids plus run_completed, pipeline_complete, and pipeline_blocked", () => {
       expect(NTFY_NOTIFY_EVENTS).toContain("needs_input");
       expect(NTFY_NOTIFY_EVENTS).toContain("run_failed");
       expect(NTFY_NOTIFY_EVENTS).toContain("auth_expired");
       expect(NTFY_NOTIFY_EVENTS).toContain("run_completed");
       expect(NTFY_NOTIFY_EVENTS).toContain("pipeline_complete");
+      expect(NTFY_NOTIFY_EVENTS).toContain("pipeline_blocked");
       expect(NTFY_NOTIFY_EVENTS.indexOf("run_completed")).toBe(3);
       expect(NTFY_NOTIFY_EVENTS.indexOf("pipeline_complete")).toBe(4);
+      expect(NTFY_NOTIFY_EVENTS.indexOf("pipeline_blocked")).toBe(5);
     });
 
     it("accepts settings whose events include both new ids", () => {
@@ -383,6 +385,101 @@ describe("b52 phase 1 — catalog and notifier methods", () => {
       });
 
       notifier.pipelineComplete(runId);
+      await flushAsyncWork();
+
+      expect(notifyMock).toHaveBeenCalledTimes(1);
+      expect(fetchCalls).toHaveLength(0);
+    });
+  });
+
+  describe("pipelineBlocked", () => {
+    const originalFetch = globalThis.fetch;
+    let fetchCalls: FetchCall[] = [];
+
+    beforeEach(() => {
+      notifyMock.mockReset();
+      fetchCalls = [];
+      globalThis.fetch = vi.fn(async (input, init) => {
+        fetchCalls.push({ url: String(input), init });
+        return new Response(null, { status: 200 });
+      }) as typeof fetch;
+    });
+
+    afterEach(() => {
+      globalThis.fetch = originalFetch;
+      notifyMock.mockReset();
+    });
+
+    it("fires toast and allowlisted ntfy with matching copy (unlabeled)", async () => {
+      const runId = "pipeline-blocked-run-1";
+      const ntfyBase = "http://100.64.1.2:3747";
+      const notifier = new Notifier({
+        dashboardUrl: "http://127.0.0.1:3747",
+        ntfyDashboardUrl: ntfyBase,
+        eventPrefs: eventPrefsForNtfy("pipeline_blocked"),
+        ntfy: connectionOnly(),
+      });
+
+      notifier.pipelineBlocked(runId);
+      await flushAsyncWork();
+
+      expect(notifyMock).toHaveBeenCalledTimes(1);
+      expect(notifyMock.mock.calls[0]?.[0]).toMatchObject({
+        title: "Max pipeline blocked",
+        message: "Pipeline blocked (pipeline)",
+        open: buildRunDeepLink("http://127.0.0.1:3747", runId),
+      });
+
+      expect(fetchCalls).toHaveLength(1);
+      expect(parseBody(fetchCalls[0]?.init)).toEqual({
+        topic: FAKE_TOPIC,
+        title: "Max pipeline blocked",
+        message: "Pipeline blocked (pipeline)",
+        click: `${ntfyBase}/?run=${encodeURIComponent(runId)}`,
+      });
+    });
+
+    it("uses labeled message when label is non-empty", async () => {
+      const runId = "pipeline-blocked-labeled";
+      const notifier = new Notifier({
+        dashboardUrl: "http://127.0.0.1:3747",
+        eventPrefs: eventPrefsForNtfy("pipeline_blocked"),
+        ntfy: connectionOnly(),
+      });
+
+      notifier.pipelineBlocked(runId, "implement-fully");
+      await flushAsyncWork();
+
+      const expected = "implement-fully blocked (pipeline)";
+      expect(notifyMock.mock.calls[0]?.[0].message).toBe(expected);
+      expect(parseBody(fetchCalls[0]?.init).message).toBe(expected);
+    });
+
+    it("treats blank label as absent", async () => {
+      const runId = "pipeline-blocked-blank";
+      const notifier = new Notifier({
+        dashboardUrl: "http://127.0.0.1:3747",
+        eventPrefs: eventPrefsForNtfy("pipeline_blocked"),
+        ntfy: connectionOnly(),
+      });
+
+      notifier.pipelineBlocked(runId, "  \t  ");
+      await flushAsyncWork();
+
+      const expected = "Pipeline blocked (pipeline)";
+      expect(notifyMock.mock.calls[0]?.[0].message).toBe(expected);
+      expect(parseBody(fetchCalls[0]?.init).message).toBe(expected);
+    });
+
+    it("still toasts when pipeline_blocked is not allowlisted", async () => {
+      const runId = "pipeline-blocked-no-ntfy";
+      const notifier = new Notifier({
+        dashboardUrl: "http://127.0.0.1:3747",
+        eventPrefs: eventPrefsForNtfy("needs_input"),
+        ntfy: connectionOnly(),
+      });
+
+      notifier.pipelineBlocked(runId);
       await flushAsyncWork();
 
       expect(notifyMock).toHaveBeenCalledTimes(1);

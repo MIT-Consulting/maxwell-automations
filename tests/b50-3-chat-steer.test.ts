@@ -226,12 +226,12 @@ describe("resolveSteerTargetRunId", () => {
 });
 
 describe("b50 chat steer schema and HTTP", () => {
-  it("migrates to SCHEMA_VERSION 21 with attached_run_id on chat_sessions", () => {
+  it("migrates to SCHEMA_VERSION >= 21 with attached_run_id on chat_sessions", () => {
     const root = mkdtempSync(join(tmpdir(), "lca-b50-schema-"));
     const db = openDatabase(join(root, "state.sqlite"));
     try {
       expect(schemaVersion(db)).toBe(SCHEMA_VERSION);
-      expect(SCHEMA_VERSION).toBe(21);
+      expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(21);
       const cols = db
         .prepare("PRAGMA table_info(chat_sessions)")
         .all() as Array<{ name: string }>;

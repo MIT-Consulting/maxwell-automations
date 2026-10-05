@@ -7,6 +7,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
   PIPELINE_HALT_RECOVERY_NATIVE_DECLINE_CODES,
+  PIPELINE_LIFECYCLE_EVENT_SET,
   workerKeyFromConfigKey,
   type PipelineHaltRecoveryDeclineCode,
   type RunStatus,
@@ -23,35 +24,6 @@ import type { RunStore } from "./store.js";
 export const HALT_DISCOVERY_LINEAGE_CAP = 24;
 const KEY_EVENT_CAP = 12;
 const FREE_TEXT_MAX_BYTES = 4096;
-
-const DIAGNOSIS_KEY_EVENTS = new Set([
-  "run.error",
-  "run.finished",
-  "run.resumed",
-  "run.revived",
-  "run.retained.fallback",
-  "run.retry.scheduled",
-  "run.reconciled",
-  "run.stalled",
-  "run.chained",
-  "run.chain-skipped",
-  "run.chain-control",
-  "run.pipeline-escalated",
-  "run.pipeline-halt-unrecovered",
-  "run.pipeline-resumed",
-  "run.pipeline-fanout",
-  "run.pipeline-track-completed",
-  "run.pipeline-join-ready",
-  "run.pipeline-integration-enqueued",
-  "run.pipeline-final-gate-enqueued",
-  "run.pipeline-wave-finalized",
-  "run.pipeline-wave-blocked",
-  "run.pipeline-wave-recovered",
-  "run.pipeline-wave-cleanup",
-  "run.pipeline-halt-discovery-requested",
-  "run.pipeline-halt-discovery-skipped",
-  "run.pipeline-halt-discovery-failed",
-]);
 
 /** Mirrors trigger allowlist: native declines + current RunEscalationRefusal literals. */
 const DECLINE_CODE_ALLOWLIST = new Set<string>([
@@ -473,7 +445,9 @@ function collectKeyEvents(
   keyEventsTruncated: boolean;
   keyEventsListedCount: number;
 } {
-  const relevant = events.filter((e) => DIAGNOSIS_KEY_EVENTS.has(e.event_type));
+  const relevant = events.filter((e) =>
+    PIPELINE_LIFECYCLE_EVENT_SET.has(e.event_type)
+  );
   const listedCount = relevant.length;
   const newestFirst = relevant.slice().reverse();
   const capped = newestFirst.slice(0, KEY_EVENT_CAP);

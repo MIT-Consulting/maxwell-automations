@@ -20,6 +20,14 @@ describe("b68 About surfaces", () => {
     expect(about).toMatch(/Check now/);
     expect(about).toMatch(/Apache License 2\.0/);
     expect(about).toMatch(/does not install a release/);
+    expect(about).toMatch(/Node requirement/);
+    expect(about).toMatch(/Upgrade actions/);
+    expect(about).toMatch(/runningNode/);
+    expect(about).toMatch(/satisfiesNodeFloor/);
+    expect(about).toMatch(/formatRunningNodeLabel/);
+    expect(about).toMatch(/formatPersistedUpgradeActionsLines/);
+    expect(about).toMatch(/Required:/);
+    expect(about).toMatch(/retry Check now/);
   });
 
   it("shows a chip for available and restart-required and opens About", () => {
@@ -29,6 +37,6 @@ describe("b68 About surfaces", () => {
     expect(app).toMatch(/selectView\("settings"\)/);
     expect(bar).toMatch(/updateChip/);
     expect(readSrc("packages/shared/src/version.ts")).toMatch(/Restart required/);
-    expect(readSrc("packages/shared/src/version.ts")).toMatch(/Update \$\{/);
+    expect(readSrc("packages/shared/src/version.ts")).toMatch(/needs Node/);
   });
 });

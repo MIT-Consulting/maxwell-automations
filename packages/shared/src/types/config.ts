@@ -42,6 +42,7 @@ export const NTFY_NOTIFY_EVENTS = [
   "auth_expired",
   "run_completed",
   "pipeline_complete",
+  "pipeline_blocked",
   "queue_batch_complete",
   "plan_approval_required",
   "ux_approval_required",
@@ -61,7 +62,7 @@ export const HALT_DISCOVERY_NOTIFY_EVENTS = [
 export type HaltDiscoveryNotifyEvent =
   (typeof HALT_DISCOVERY_NOTIFY_EVENTS)[number];
 
-/** Full operator alert catalog (eight catalog + five halt/discovery). */
+/** Full operator alert catalog (nine ntfy + five halt/discovery). */
 export const ALERT_NOTIFY_EVENTS = [
   ...NTFY_NOTIFY_EVENTS,
   ...HALT_DISCOVERY_NOTIFY_EVENTS,
@@ -85,13 +86,14 @@ export type ResolvedNotifyEventPrefs = Record<
   NotifyEventChannelPrefs
 >;
 
-/** Smart defaults for all thirteen alert ids (b51 + b58). */
+/** Smart defaults for all fourteen alert ids (b51 + b58 + b82). */
 export const DEFAULT_NOTIFY_EVENT_PREFS: ResolvedNotifyEventPrefs = {
   needs_input: { toast: true, ntfy: true },
   run_failed: { toast: true, ntfy: true },
   auth_expired: { toast: true, ntfy: true },
   run_completed: { toast: false, ntfy: false },
   pipeline_complete: { toast: true, ntfy: true },
+  pipeline_blocked: { toast: true, ntfy: true },
   queue_batch_complete: { toast: true, ntfy: true },
   plan_approval_required: { toast: true, ntfy: true },
   ux_approval_required: { toast: true, ntfy: true },

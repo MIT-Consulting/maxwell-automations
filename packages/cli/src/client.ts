@@ -1,5 +1,7 @@
 import WebSocket from "ws";
 import {
+  ACTOR_ID_HEADER,
+  sanitizeActorId,
   IMPLEMENT_FULLY_PIPELINE_ID,
   type Automation,
   type ChatSession,
@@ -19,6 +21,9 @@ import {
   type ResumeRunResponse,
   type ResolveImplementFullyKickoffRequest,
   type ResolveImplementFullyKickoffResponse,
+  type GetWorkspaceRoadmapFixPlanResponse,
+  type RoadmapReadinessReport,
+  type RoadmapReadinessSummariesResponse,
   type Run,
   type RunEscalationRequest,
   type RunEscalationResponse,
@@ -26,13 +31,20 @@ import {
   type PipelineWaveControlResponse,
   type PipelineWaveOperatorRequest,
   type PipelineWaveOperatorResponse,
+  type PipelineDirectiveAppendRequest,
+  type PipelineDirectiveAppendResponse,
+  type PipelineFeedResponse,
+  type PipelineSnapshot,
+  type PipelineStopAfterStepResponse,
   type RunPipelineTrackDoctorDetail,
   type RunPipelineTrackSummary,
   type RunPipelineWaveDoctorDetail,
   type RunPipelineWaveSummary,
   type SendRunMessageResponse,
+  type CreateWorkspaceRequest,
   type TriggerRunRequest,
   type Workspace,
+  type WorkspaceMutationResponse,
   type WsServerMessage,
 } from "@lca/shared";
 import { readControlToken } from "./remote.js";
@@ -43,6 +55,13 @@ function controlToken(): string | undefined {
 }
 
 const CONTROL_TOKEN_HEADER = "X-LCA-Control-Token";
+
+function actorRequestHeaders(): Record<string, string> {
+  const raw = process.env.LCA_ACTOR?.trim();
+  if (!raw) return {};
+  const actorId = sanitizeActorId(raw);
+  return actorId ? { [ACTOR_ID_HEADER]: actorId } : {};
+}
 
 export type RunSnapshot = {
   run: {
@@ -119,6 +138,31 @@ export class ProvisionConflictError extends DaemonError {
 }
 
 /**
+ * Exact workspace match by id, name, or path tail — no id prefix matching.
+ */
+export async function resolveExactWorkspaceTarget(
+  client: DaemonClient,
+  query: string
+): Promise<string | null> {
+  const workspaces = await client.listWorkspaces();
+  const byId = workspaces.find((w) => w.id === query);
+  if (byId) return byId.id;
+
+  const lower = query.toLowerCase();
+  const tail = (path: string) =>
+    path.replace(/[\\/]+$/, "").split(/[\\/]/).pop()?.toLowerCase() ?? "";
+  const matches = workspaces.filter(
+    (w) =>
+      (w.name && w.name.toLowerCase() === lower) || tail(w.path) === lower
+  );
+  if (matches.length === 1) return matches[0]!.id;
+  if (matches.length > 1) {
+    throw new DaemonError(`Ambiguous workspace "${query}". Use the full id.`);
+  }
+  return null;
+}
+
+/**
  * Resolve an optional `--workspace <id|name|path>` flag to a workspace id.
  * Matches an exact id, then a case-insensitive name or path-tail, then a unique
  * id prefix.
@@ -161,12 +205,14 @@ export class DaemonClient {
   private async request<T>(path: string, init?: RequestInit): Promise<T> {
     let res: Response;
     const token = controlToken();
-    const withToken: RequestInit | undefined = token
-      ? {
-          ...init,
-          headers: { ...init?.headers, [CONTROL_TOKEN_HEADER]: token },
-        }
-      : init;
+    const withToken: RequestInit = {
+      ...init,
+      headers: {
+        ...init?.headers,
+        ...actorRequestHeaders(),
+        ...(token ? { [CONTROL_TOKEN_HEADER]: token } : {}),
+      },
+    };
     try {
       res = await fetch(`${this.base}${path}`, withToken);
     } catch (err) {
@@ -206,6 +252,13 @@ export class DaemonClient {
     });
   }
 
+  private actorBody<T extends Record<string, unknown>>(body: T): T {
+    const raw = process.env.LCA_ACTOR?.trim();
+    if (!raw) return body;
+    const actorId = sanitizeActorId(raw);
+    return actorId ? { ...body, actorId } : body;
+  }
+
   health(): Promise<{ ok: boolean; version: string }> {
     return this.request("/health");
   }
@@ -239,9 +292,77 @@ export class DaemonClient {
     return data.workspaces;
   }
 
+  async createWorkspace(input: CreateWorkspaceRequest): Promise<Workspace> {
+    const data = await this.postJson<WorkspaceMutationResponse>(
+      "/api/workspaces",
+      input
+    );
+    return data.workspace;
+  }
+
   getRun(runId: string): Promise<RunSnapshot> {
     return this.request<RunSnapshot>(
       `/api/runs/${encodeURIComponent(runId)}`
+    );
+  }
+
+  /** Hydrated pipeline snapshot for a root run id. */
+  async getPipelineSnapshot(rootRunId: string): Promise<PipelineSnapshot> {
+    const data = await this.request<{
+      rootRunId: string;
+      snapshot: PipelineSnapshot;
+    }>(`/api/pipeline-runs/${encodeURIComponent(rootRunId)}`);
+    return data.snapshot;
+  }
+
+  /** Newest implement-fully root for a feature in a workspace. */
+  async resolvePipelineSnapshot(
+    workspaceId: string,
+    featureId: string
+  ): Promise<{ rootRunId: string; snapshot: PipelineSnapshot }> {
+    const params = new URLSearchParams({
+      workspace: workspaceId,
+      feature: featureId,
+    });
+    return this.request<{ rootRunId: string; snapshot: PipelineSnapshot }>(
+      `/api/pipeline-runs?${params.toString()}`
+    );
+  }
+
+  /** Long-poll pipeline lifecycle feed for `max watch`. */
+  pollPipelineFeed(
+    rootRunId: string,
+    since: number,
+    waitSeconds: number,
+    signal?: AbortSignal
+  ): Promise<PipelineFeedResponse> {
+    const params = new URLSearchParams({
+      since: String(since),
+      wait: String(waitSeconds),
+    });
+    return this.request<PipelineFeedResponse>(
+      `/api/pipeline-runs/${encodeURIComponent(rootRunId)}/events?${params.toString()}`,
+      { signal }
+    );
+  }
+
+  appendPipelineDirective(
+    rootRunId: string,
+    body: PipelineDirectiveAppendRequest
+  ): Promise<PipelineDirectiveAppendResponse> {
+    return this.postJson<PipelineDirectiveAppendResponse>(
+      `/api/pipeline-runs/${encodeURIComponent(rootRunId)}/directives`,
+      this.actorBody(body)
+    );
+  }
+
+  pipelineStopAfterStep(
+    rootRunId: string,
+    body?: { reason?: string }
+  ): Promise<PipelineStopAfterStepResponse> {
+    return this.postJson<PipelineStopAfterStepResponse>(
+      `/api/pipeline-runs/${encodeURIComponent(rootRunId)}/stop`,
+      this.actorBody(body ?? {})
     );
   }
 
@@ -272,10 +393,37 @@ export class DaemonClient {
   }
 
   getPipeline(
-    pipelineId: string
+    pipelineId: string,
+    workspaceId?: string
   ): Promise<PipelineIntrospectionResponse> {
+    const suffix =
+      workspaceId != null && workspaceId !== ""
+        ? `?workspaceId=${encodeURIComponent(workspaceId)}`
+        : "";
     return this.request<PipelineIntrospectionResponse>(
-      `/api/pipelines/${encodeURIComponent(pipelineId)}`
+      `/api/pipelines/${encodeURIComponent(pipelineId)}${suffix}`
+    );
+  }
+
+  getRoadmapReadinessSummaries(): Promise<RoadmapReadinessSummariesResponse> {
+    return this.request<RoadmapReadinessSummariesResponse>(
+      "/api/roadmap-readiness"
+    );
+  }
+
+  getWorkspaceRoadmapReadiness(
+    workspaceId: string
+  ): Promise<RoadmapReadinessReport> {
+    return this.request<RoadmapReadinessReport>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/roadmap-readiness`
+    );
+  }
+
+  getWorkspaceRoadmapFixPlan(
+    workspaceId: string
+  ): Promise<GetWorkspaceRoadmapFixPlanResponse> {
+    return this.request<GetWorkspaceRoadmapFixPlanResponse>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/roadmap-fix-plan`
     );
   }
 
@@ -357,13 +505,17 @@ export class DaemonClient {
   }
 
   async answer(runId: string, answer: string): Promise<void> {
-    await this.postJson(`/api/runs/${encodeURIComponent(runId)}/answer`, {
-      answer,
-    });
+    await this.postJson(
+      `/api/runs/${encodeURIComponent(runId)}/answer`,
+      this.actorBody({ answer })
+    );
   }
 
   async cancel(runId: string): Promise<void> {
-    await this.postJson(`/api/runs/${encodeURIComponent(runId)}/cancel`);
+    await this.postJson(
+      `/api/runs/${encodeURIComponent(runId)}/cancel`,
+      this.actorBody({})
+    );
   }
 
   /** Operator escalation: retry / skip / abort a halted pipeline run. */
@@ -373,7 +525,7 @@ export class DaemonClient {
   ): Promise<RunEscalationResponse> {
     return this.postJson<RunEscalationResponse>(
       `/api/runs/${encodeURIComponent(runId)}/escalate`,
-      body
+      this.actorBody(body)
     );
   }
 
@@ -436,14 +588,14 @@ export class DaemonClient {
   async sendMessage(runId: string, message: string): Promise<void> {
     await this.postJson<SendRunMessageResponse>(
       `/api/runs/${encodeURIComponent(runId)}/message`,
-      { message }
+      this.actorBody({ message })
     );
   }
 
   async queueMessage(runId: string, message: string): Promise<string | undefined> {
     const data = await this.postJson<QueueRunMessageResponse>(
       `/api/runs/${encodeURIComponent(runId)}/queue-message`,
-      { message }
+      this.actorBody({ message })
     );
     return data.queuedMessageId;
   }
@@ -451,20 +603,21 @@ export class DaemonClient {
   async interrupt(runId: string, message: string): Promise<void> {
     await this.postJson<InterruptRunResponse>(
       `/api/runs/${encodeURIComponent(runId)}/interrupt`,
-      { message }
+      this.actorBody({ message })
     );
   }
 
   async pause(runId: string): Promise<void> {
     await this.postJson<PauseRunResponse>(
-      `/api/runs/${encodeURIComponent(runId)}/pause`
+      `/api/runs/${encodeURIComponent(runId)}/pause`,
+      this.actorBody({})
     );
   }
 
   async resume(runId: string, note?: string): Promise<void> {
     await this.postJson<ResumeRunResponse>(
       `/api/runs/${encodeURIComponent(runId)}/resume`,
-      note !== undefined ? { note } : {}
+      this.actorBody(note !== undefined ? { note } : {})
     );
   }
 

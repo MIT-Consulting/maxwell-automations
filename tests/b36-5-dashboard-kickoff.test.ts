@@ -20,6 +20,7 @@ import {
   type ProvisionPipelineWorkersResponse,
 } from "@lca/shared";
 import { assembleKickoffPayload } from "../packages/dashboard/src/pipelineKickoff.ts";
+import { describeKickoffReadinessBlockers } from "../packages/dashboard/src/roadmapReadinessUi.ts";
 import { openDatabase } from "../packages/daemon/src/db/index.ts";
 import { workspaceIdFromPath } from "../packages/daemon/src/config/reconcile.ts";
 import { DEFAULT_SETTINGS } from "../packages/daemon/src/config/settings.ts";
@@ -299,6 +300,47 @@ describe("b36.05c dashboard kickoff parity", () => {
     expect(payload.modelSelection).toEqual({ id: "planner-model" });
   });
 
+  it("maps readiness impacts to kickoff blockers and notes", () => {
+    const report = {
+      state: "adoptable" as const,
+      findings: [
+        {
+          code: "not-git-repo",
+          impact: "blocks-all" as const,
+          message: "Workspace is not a git repository",
+          fix: "Run git init in the workspace root.",
+          fixable_by: "user" as const,
+        },
+        {
+          code: "per-person-idea",
+          impact: "idea-only" as const,
+          message: "Per-person markers block idea kickoff",
+          fix: "Pick a canonical feature id.",
+          fixable_by: "agent" as const,
+        },
+      ],
+      features: [],
+      candidates: [],
+    };
+
+    const idea = describeKickoffReadinessBlockers({
+      report,
+      roadmapIndexPresent: true,
+      inputKind: "idea",
+      featureId: "",
+    });
+    expect(idea.blockers).toHaveLength(2);
+
+    const feature = describeKickoffReadinessBlockers({
+      report,
+      roadmapIndexPresent: true,
+      inputKind: "feature-id",
+      featureId: "b42",
+    });
+    expect(feature.blockers).toHaveLength(1);
+    expect(feature.blockers[0]).toMatch(/git/i);
+  });
+
   it("introspection preconditions are additive and accurate", async () => {
     const root = mkdtempSync(join(tmpdir(), "lca-b36-5c-pre-"));
     const workspacePath = join(root, "workspace");
@@ -346,11 +388,10 @@ describe("b36.05c dashboard kickoff parity", () => {
       );
       expect(withWs.status).toBe(200);
       const body = (await withWs.json()) as PipelineIntrospectionResponse;
-      expect(body.preconditions).toEqual({
-        workspaceId,
-        gitRepo: true,
-        roadmapIndex: true,
-      });
+      expect(body.preconditions?.workspaceId).toBe(workspaceId);
+      expect(body.preconditions?.gitRepo).toBe(true);
+      expect(body.preconditions?.roadmapIndex).toBe(true);
+      expect(body.preconditions?.roadmapReadiness?.state).toBeDefined();
 
       rmSync(join(workspacePath, ".git"), { recursive: true, force: true });
       const noGit = await fetch(

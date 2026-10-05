@@ -3,6 +3,13 @@
  * Callers supply read/fetch so the dashboard bundle never pulls Node APIs.
  */
 
+import { parseNodeFloorFromPackageManifest, satisfiesNodeFloor } from "./node-floor.js";
+import {
+  boundUpgradeActionLines,
+  extractUpgradeActionsFromReleaseBody,
+  upgradeActionsForPersistence,
+} from "./upgrade-actions.js";
+
 export const FACTORY_VERSION = "0.0.0-dev";
 export const DEFAULT_UPDATE_REPO = "MIT-Consulting/maxwell-automations";
 
@@ -30,6 +37,10 @@ export type ReleaseInfo = {
   tag: string;
   url: string | null;
   notes: string | null;
+  /** Target `engines.node` from the tagged manifest; null when unknown. */
+  nodeFloor: string | null;
+  /** Bounded action lines; null unknown, `[]` explicit none. */
+  upgradeActions: string[] | null;
 };
 
 export type UpdateSnapshot = {
@@ -40,6 +51,8 @@ export type UpdateSnapshot = {
   updateState: UpdateState;
   lastCheckedAt: string | null;
   releaseUrl: string | null;
+  /** Node version used for floor evaluation (CLI or daemon runtime). */
+  runningNode: string | null;
 };
 
 export type UpdateSettingsResolved = {
@@ -75,6 +88,7 @@ type FetchResponse = {
   ok: boolean;
   headers: { get(name: string): string | null };
   json: () => Promise<unknown>;
+  text: () => Promise<string>;
 };
 
 export type UpdateFetch = (
@@ -171,20 +185,41 @@ export function formatRunningLabel(id: VersionIdentity): string {
   return id.dirty ? `${id.version} dirty` : id.version;
 }
 
-export function formatUpdateSummary(input: {
+export type UpdateDisplayInput = {
   updateState?: UpdateState;
   running?: VersionIdentity | null;
   checkout?: VersionIdentity | null;
-  available?: { version: string } | null;
-}): string {
+  available?: ReleaseInfo | null;
+  runningNode?: string | null;
+};
+
+function formatNodeMinimum(requirement: string): string {
+  const trimmed = requirement.trim();
+  return trimmed.startsWith(">=") ? trimmed.slice(2).trim() : trimmed;
+}
+
+function evaluateUnmetNodeFloor(input: UpdateDisplayInput): string | null {
+  if (input.updateState !== "available" || !input.available?.nodeFloor) return null;
+  const runningNode = input.runningNode;
+  if (!runningNode) return null;
+  const check = satisfiesNodeFloor(runningNode, input.available.nodeFloor);
+  if (check.ok || check.minimum === null) return null;
+  return formatNodeMinimum(check.requirement);
+}
+
+export function formatUpdateSummary(input: UpdateDisplayInput): string {
   const state = input.updateState ?? "unknown";
   const running = input.running ? formatRunningLabel(input.running) : "unknown";
   const checkout = input.checkout?.version ?? "unknown";
   const approved = input.available?.version ?? "unknown";
+  const nodeNeed = evaluateUnmetNodeFloor(input);
   switch (state) {
     case "restart-required":
       return `restart-required — running ${running}, checkout ${checkout}`;
     case "available":
+      if (nodeNeed) {
+        return `available — running ${running}, approved ${approved} · needs Node ${nodeNeed}`;
+      }
       return `available — running ${running}, approved ${approved}`;
     case "ahead/dev":
       return `ahead/dev — ${running}`;
@@ -201,23 +236,35 @@ export function formatUpdateSummary(input: {
   }
 }
 
-export function updateChipLabel(input: {
-  updateState?: UpdateState;
-  available?: { version: string } | null;
-} | null): string | null {
+export function updateChipLabel(input: UpdateDisplayInput | null): string | null {
   if (!input) return null;
   if (input.updateState === "available" && input.available?.version) {
+    const nodeNeed = evaluateUnmetNodeFloor(input);
+    if (nodeNeed) {
+      return `Update ${input.available.version} · needs Node ${nodeNeed}`;
+    }
     return `Update ${input.available.version}`;
   }
   if (input.updateState === "restart-required") return "Restart required";
   return null;
 }
 
-export function updateStateDetail(state: UpdateState): string {
+export function updateStateDetail(
+  state: UpdateState,
+  input?: Pick<UpdateDisplayInput, "available" | "runningNode" | "updateState"> | null
+): string {
+  const nodeNeed =
+    input && input.updateState === state ? evaluateUnmetNodeFloor(input) : null;
   switch (state) {
     case "restart-required":
       return "Checkout differs from the running build. Restart picks up the local build. It does not install a release.";
     case "available":
+      if (nodeNeed) {
+        return (
+          `A newer approved release exists but requires Node ${nodeNeed}. ` +
+          "Install a compatible Node version before upgrading."
+        );
+      }
       return "A newer approved release exists. Upgrading is a manual pin move.";
     case "ahead/dev":
       return "Factory checkout. Public tags are not an upgrade target.";
@@ -234,19 +281,87 @@ export function updateStateDetail(state: UpdateState): string {
   }
 }
 
-export function releasesLatestUrl(repo: string, host: string | null): string | null {
+function parseRepoSlug(repo: string): { owner: string; name: string } | null {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) return null;
   const slash = repo.indexOf("/");
-  const owner = repo.slice(0, slash);
-  const name = repo.slice(slash + 1);
-  const apiHost = (host ?? "https://api.github.com").replace(/\/$/, "");
+  return { owner: repo.slice(0, slash), name: repo.slice(slash + 1) };
+}
+
+function apiHostBase(host: string | null): string {
+  return (host ?? "https://api.github.com").replace(/\/$/, "");
+}
+
+export function releasesLatestUrl(repo: string, host: string | null): string | null {
+  const slug = parseRepoSlug(repo);
+  if (!slug) return null;
+  const apiHost = apiHostBase(host);
   if (apiHost === "https://api.github.com" || apiHost === "api.github.com") {
-    return `https://api.github.com/repos/${owner}/${name}/releases/latest`;
+    return `https://api.github.com/repos/${slug.owner}/${slug.name}/releases/latest`;
   }
   if (apiHost.includes("/api/")) {
-    return `${apiHost}/repos/${owner}/${name}/releases/latest`;
+    return `${apiHost}/repos/${slug.owner}/${slug.name}/releases/latest`;
   }
-  return `${apiHost}/api/v3/repos/${owner}/${name}/releases/latest`;
+  return `${apiHost}/api/v3/repos/${slug.owner}/${slug.name}/releases/latest`;
+}
+
+export function releaseByTagUrl(
+  repo: string,
+  tag: string,
+  host: string | null
+): string | null {
+  const slug = parseRepoSlug(repo);
+  if (!slug) return null;
+  const encodedTag = encodeURIComponent(tag);
+  const apiHost = apiHostBase(host);
+  if (apiHost === "https://api.github.com" || apiHost === "api.github.com") {
+    return `https://api.github.com/repos/${slug.owner}/${slug.name}/releases/tags/${encodedTag}`;
+  }
+  if (apiHost.includes("/api/")) {
+    return `${apiHost}/repos/${slug.owner}/${slug.name}/releases/tags/${encodedTag}`;
+  }
+  return `${apiHost}/api/v3/repos/${slug.owner}/${slug.name}/releases/tags/${encodedTag}`;
+}
+
+export function packageContentsUrl(
+  repo: string,
+  tag: string,
+  host: string | null
+): string | null {
+  const slug = parseRepoSlug(repo);
+  if (!slug) return null;
+  const encodedTag = encodeURIComponent(tag);
+  const apiHost = apiHostBase(host);
+  if (apiHost === "https://api.github.com" || apiHost === "api.github.com") {
+    return `https://api.github.com/repos/${slug.owner}/${slug.name}/contents/package.json?ref=${encodedTag}`;
+  }
+  if (apiHost.includes("/api/")) {
+    return `${apiHost}/repos/${slug.owner}/${slug.name}/contents/package.json?ref=${encodedTag}`;
+  }
+  return `${apiHost}/api/v3/repos/${slug.owner}/${slug.name}/contents/package.json?ref=${encodedTag}`;
+}
+
+function normalizeReleaseInfo(release: Partial<ReleaseInfo> | null | undefined): ReleaseInfo | null {
+  if (!release || typeof release.version !== "string" || release.version.trim() === "") {
+    return null;
+  }
+  const version = release.version.trim();
+  return {
+    version,
+    tag: typeof release.tag === "string" && release.tag.trim() ? release.tag.trim() : `v${version}`,
+    url: typeof release.url === "string" ? release.url : null,
+    notes: typeof release.notes === "string" ? release.notes : null,
+    nodeFloor: typeof release.nodeFloor === "string" ? release.nodeFloor : null,
+    upgradeActions: Array.isArray(release.upgradeActions)
+      ? [...boundUpgradeActionLines(
+          release.upgradeActions.filter((line): line is string => typeof line === "string")
+        )]
+      : null,
+  };
+}
+
+function releaseNeedsEnrichment(release: ReleaseInfo | null): release is ReleaseInfo {
+  if (!release) return false;
+  return release.nodeFloor === null || release.upgradeActions === null;
 }
 
 export function excerptReleaseNotes(body: unknown, max = 240): string | null {
@@ -264,11 +379,17 @@ export function releaseFromGitHubPayload(payload: unknown): ReleaseInfo | "non-s
   if (!tag) return null;
   const version = tag.startsWith("v") ? tag.slice(1) : tag;
   if (!parseSemver(version)) return "non-semver";
+  const body = typeof record.body === "string" ? record.body : "";
+  const upgradeActions = upgradeActionsForPersistence(
+    extractUpgradeActionsFromReleaseBody(body)
+  );
   return {
     version,
     tag,
     url: typeof record.html_url === "string" ? record.html_url : null,
-    notes: excerptReleaseNotes(record.body),
+    notes: excerptReleaseNotes(body),
+    nodeFloor: null,
+    upgradeActions,
   };
 }
 
@@ -361,6 +482,91 @@ type ReleaseFetchResult =
   | { kind: "missing" }
   | { kind: "offline" };
 
+async function fetchRawText(
+  fetchImpl: UpdateFetch,
+  url: string,
+  token: string | undefined
+): Promise<string | null> {
+  const headers: Record<string, string> = {
+    Accept: "application/vnd.github.raw+json",
+    "User-Agent": "max-update-check",
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  let response: FetchResponse;
+  try {
+    response = await fetchImpl(url, { headers });
+  } catch {
+    return null;
+  }
+  if (response.status === 404 || !response.ok) return null;
+  try {
+    return await response.text();
+  } catch {
+    return null;
+  }
+}
+
+async function enrichReleaseMetadata(
+  fetchImpl: UpdateFetch,
+  repo: string,
+  host: string | null,
+  release: ReleaseInfo,
+  token: string | undefined,
+  log?: (message: string) => void
+): Promise<ReleaseInfo> {
+  let next = release;
+  if (next.nodeFloor === null) {
+    const contentsUrl = packageContentsUrl(repo, next.tag, host);
+    if (contentsUrl) {
+      const manifestText = await fetchRawText(fetchImpl, contentsUrl, token);
+      if (manifestText) {
+        const floor = parseNodeFloorFromPackageManifest(manifestText);
+        if (floor) {
+          next = { ...next, nodeFloor: floor };
+        } else {
+          log?.(`target manifest at ${next.tag} has no engines.node`);
+        }
+      } else {
+        log?.(`could not fetch package.json for ${next.tag}`);
+      }
+    }
+  }
+
+  if (next.upgradeActions === null) {
+    const tagUrl = releaseByTagUrl(repo, next.tag, host);
+    if (tagUrl) {
+      const headers: Record<string, string> = {
+        Accept: "application/vnd.github+json",
+        "User-Agent": "max-update-check",
+        "X-GitHub-Api-Version": "2022-11-28",
+      };
+      if (token) headers.Authorization = `Bearer ${token}`;
+      try {
+        const response = await fetchImpl(tagUrl, { headers });
+        if (response.ok) {
+          const payload = await response.json();
+          if (payload && typeof payload === "object") {
+            const body = (payload as Record<string, unknown>).body;
+            if (typeof body === "string") {
+              next = {
+                ...next,
+                upgradeActions: upgradeActionsForPersistence(
+                  extractUpgradeActionsFromReleaseBody(body)
+                ),
+              };
+            }
+          }
+        }
+      } catch {
+        log?.(`could not fetch release body for ${next.tag}`);
+      }
+    }
+  }
+
+  return next;
+}
+
 async function fetchLatest(
   fetchImpl: UpdateFetch,
   url: string,
@@ -403,6 +609,7 @@ export class UpdateChecker {
       settings: UpdateSettingsResolved;
       running: VersionIdentity;
       checkout: VersionIdentity | null;
+      runningNode: string;
       readCache: () => string | null;
       writeCache: (text: string) => void;
       fetch: UpdateFetch;
@@ -467,8 +674,25 @@ export class UpdateChecker {
     if (approved.kind === "not-modified") {
       next.checkedAt = nowIso;
       next.error = null;
+      if (releaseNeedsEnrichment(next.release)) {
+        next.release = await enrichReleaseMetadata(
+          this.deps.fetch,
+          this.deps.settings.repo,
+          this.deps.settings.host,
+          next.release!,
+          this.deps.settings.token,
+          this.deps.log
+        );
+      }
     } else if (approved.kind === "release") {
-      next.release = approved.release;
+      next.release = await enrichReleaseMetadata(
+        this.deps.fetch,
+        this.deps.settings.repo,
+        this.deps.settings.host,
+        approved.release,
+        this.deps.settings.token,
+        this.deps.log
+      );
       next.etag = approved.etag;
       next.error = null;
       next.checkedAt = nowIso;
@@ -506,10 +730,27 @@ export class UpdateChecker {
           this.deps.settings.token
         );
         if (pub.kind === "release") {
-          next.publicRelease = pub.release;
+          next.publicRelease = await enrichReleaseMetadata(
+            this.deps.fetch,
+            this.deps.settings.publicRepo,
+            this.deps.settings.host,
+            pub.release,
+            this.deps.settings.token,
+            this.deps.log
+          );
           next.publicEtag = pub.etag;
         } else if (pub.kind === "not-modified") {
           next.publicRelease = this.cache.publicRelease;
+          if (releaseNeedsEnrichment(next.publicRelease)) {
+            next.publicRelease = await enrichReleaseMetadata(
+              this.deps.fetch,
+              this.deps.settings.publicRepo!,
+              this.deps.settings.host,
+              next.publicRelease!,
+              this.deps.settings.token,
+              this.deps.log
+            );
+          }
         } else if (pub.kind === "missing" || pub.kind === "non-semver") {
           next.publicRelease = null;
           next.publicEtag = null;
@@ -553,6 +794,8 @@ export class UpdateChecker {
         ...emptyUpdateCache(this.deps.settings.repo),
         ...parsed,
         repo: this.deps.settings.repo,
+        release: normalizeReleaseInfo(parsed.release),
+        publicRelease: normalizeReleaseInfo(parsed.publicRelease),
       };
     } catch {
       return emptyUpdateCache(this.deps.settings.repo);
@@ -583,15 +826,26 @@ export class UpdateChecker {
     });
     // Factory checkouts keep a cache but are not told to move to a public tag.
     const quiet = updateState === "ahead/dev";
+    const available = quiet ? null : cache.release;
     return {
       running: this.deps.running,
       checkout: this.deps.checkout,
-      available: quiet ? null : cache.release,
+      available,
       publicAvailable:
         quiet || !this.deps.settings.publicRepo ? null : cache.publicRelease,
       updateState,
       lastCheckedAt: cache.checkedAt,
       releaseUrl: quiet ? null : (cache.release?.url ?? null),
+      runningNode: this.deps.runningNode,
     };
   }
+}
+
+/** Operator-facing lines for persisted Upgrade actions (null → unavailable). */
+export function formatPersistedUpgradeActionsLines(
+  actions: string[] | null | undefined
+): readonly string[] {
+  if (actions === null || actions === undefined) return ["unavailable"];
+  if (actions.length === 0) return ["none"];
+  return actions;
 }

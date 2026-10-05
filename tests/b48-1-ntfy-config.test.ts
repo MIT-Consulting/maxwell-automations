@@ -35,6 +35,7 @@ describe("ntfyNotifySettingsSchema", () => {
       "auth_expired",
       "run_completed",
       "pipeline_complete",
+      "pipeline_blocked",
       "queue_batch_complete",
       "plan_approval_required",
       "ux_approval_required",

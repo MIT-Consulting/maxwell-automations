@@ -31,6 +31,7 @@ import {
   resolveImplementFullyKickoff,
 } from "../packages/daemon/src/roadmap/resolve.ts";
 import type { RunEngine } from "../packages/daemon/src/runs/engine.ts";
+import { emptyFeatureIndex } from "./helpers/empty-tracker.ts";
 import { freeListenPort } from "./helpers/free-port.ts";
 
 const BOUNDS = { maxBytes: 256 * 1024, maxEntries: 1000 };
@@ -193,6 +194,18 @@ describe("b42.1 resolveImplementFullyKickoffSchema", () => {
     expect(
       resolveImplementFullyKickoffSchema.safeParse({
         workspaceId: "ws",
+        input: { kind: "feature-id", featureId: "b-xy58" },
+      }).success
+    ).toBe(true);
+    expect(
+      resolveImplementFullyKickoffSchema.safeParse({
+        workspaceId: "ws",
+        input: { kind: "feature-id", featureId: "e-xy1" },
+      }).success
+    ).toBe(true);
+    expect(
+      resolveImplementFullyKickoffSchema.safeParse({
+        workspaceId: "ws",
         input: { kind: "idea", idea: "  Ship thinner kickoff  " },
       }).data?.input
     ).toEqual({ kind: "idea", idea: "Ship thinner kickoff" });
@@ -203,6 +216,12 @@ describe("b42.1 resolveImplementFullyKickoffSchema", () => {
       resolveImplementFullyKickoffSchema.safeParse({
         workspaceId: "ws",
         input: { kind: "feature-id", featureId: "feature-42" },
+      }).success
+    ).toBe(false);
+    expect(
+      resolveImplementFullyKickoffSchema.safeParse({
+        workspaceId: "ws",
+        input: { kind: "feature-id", featureId: "ux-v2" },
       }).success
     ).toBe(false);
     expect(
@@ -820,7 +839,7 @@ describe("b42.1 POST /api/pipelines/:id/resolve", () => {
               "b42-thinner-impl-fully",
               "00-index.md"
             ),
-            "# b42\n"
+            emptyFeatureIndex("b42")
           );
         },
       },
@@ -1013,6 +1032,248 @@ describe("b42.1 POST /api/pipelines/:id/resolve", () => {
         expect(res.status).toBe(404);
         const body = (await res.json()) as { error: string };
         expect(body.error).toMatch(/roadmap index/i);
+      }
+    );
+  });
+});
+
+const PER_PERSON_FIXTURE_INDEX = `# Roadmap
+
+<!-- next: b-xy64 -->
+<!-- next: b-qr57 -->
+<!-- next: e-xy2 -->
+<!-- next: e-qr1 -->
+
+## Documented Ideas
+
+| ID | Idea | Status | File |
+| ---- | ---- | ------ | ---- |
+| b-xy58 | Thin per-person feature | Planned | [child](./b-xy58-thin-feature.md#child-section) |
+
+## Epics
+
+| ID | Epic | Children |
+| --- | ---- | -------- |
+| e-xy1 | Parent epic | b-xy58 |
+
+### P1 — Unrelated priority table
+
+| ID | Item | Notes |
+| --- | ---- | ----- |
+| b99 | Should not resolve | ignored |
+| p99 | Also ignored | ignored |
+`;
+
+describe("b42.1 per-person and epic semantics", () => {
+  it("resolves b-xy58 from Documented Ideas with anchored prior art", () => {
+    withTempWorkspace(
+      (workspace) => {
+        writeIndex(workspace, PER_PERSON_FIXTURE_INDEX);
+        writeFileSync(
+          join(workspace, "docs", "roadmap", "b-xy58-thin-feature.md"),
+          "# b-xy58\n"
+        );
+      },
+      (workspace) => {
+        const resolved = resolveImplementFullyKickoff(
+          workspace,
+          { kind: "feature-id", featureId: "b-xy58" },
+          BOUNDS
+        );
+        expect(resolved.featureId).toBe("b-xy58");
+        expect(resolved.featureSlug).toBe("b-xy58-thin-feature");
+        expect(resolved.idea).toContain(
+          "Prior art: docs/roadmap/b-xy58-thin-feature.md#child-section."
+        );
+        assertKickoffCompatible(
+          resolved.featureId,
+          resolved.featureSlug,
+          resolved.idea
+        );
+      }
+    );
+  });
+
+  it("refuses epic ids with the epic-specific message", () => {
+    withTempWorkspace(
+      (workspace) => {
+        writeIndex(workspace, PER_PERSON_FIXTURE_INDEX);
+      },
+      (workspace) => {
+        expect(() =>
+          resolveImplementFullyKickoff(
+            workspace,
+            { kind: "feature-id", featureId: "e-xy1" },
+            BOUNDS
+          )
+        ).toThrow(RoadmapResolveError);
+        try {
+          resolveImplementFullyKickoff(
+            workspace,
+            { kind: "feature-id", featureId: "e-xy1" },
+            BOUNDS
+          );
+        } catch (err) {
+          expect(err).toBeInstanceOf(RoadmapResolveError);
+          expect((err as RoadmapResolveError).category).toBe("bad_request");
+          expect((err as RoadmapResolveError).message).toBe(
+            "e-xy1 is an epic (parent brief), not a feature; kick off one of its children."
+          );
+        }
+      }
+    );
+  });
+
+  it("refuses --idea when per-person markers are present", () => {
+    withTempWorkspace(
+      (workspace) => {
+        writeIndex(workspace, PER_PERSON_FIXTURE_INDEX);
+      },
+      (workspace) => {
+        expect(() =>
+          resolveImplementFullyKickoff(
+            workspace,
+            { kind: "idea", idea: "Brand new idea" },
+            BOUNDS
+          )
+        ).toThrow(/per-person ids/i);
+        try {
+          resolveImplementFullyKickoff(
+            workspace,
+            { kind: "idea", idea: "Brand new idea" },
+            BOUNDS
+          );
+        } catch (err) {
+          expect(err).toBeInstanceOf(RoadmapResolveError);
+          expect((err as RoadmapResolveError).category).toBe("bad_request");
+          expect((err as RoadmapResolveError).message).toBe(
+            "This roadmap uses per-person ids; add the item with your id to the index, then use --feature."
+          );
+        }
+      }
+    );
+  });
+
+  it("maps epic and per-person --idea refusals over HTTP", async () => {
+    await withServer(
+      {
+        workspaceFiles: (workspace) => {
+          writeIndex(workspace, PER_PERSON_FIXTURE_INDEX);
+        },
+      },
+      async ({ base, workspaceId }) => {
+        const epicRes = await fetch(
+          `${base}/api/pipelines/${IMPLEMENT_FULLY_PIPELINE_ID}/resolve`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              workspaceId,
+              input: { kind: "feature-id", featureId: "e-xy1" },
+            }),
+          }
+        );
+        expect(epicRes.status).toBe(400);
+        const epicBody = (await epicRes.json()) as { error: string };
+        expect(epicBody.error).toMatch(/epic \(parent brief\)/);
+
+        const ideaRes = await fetch(
+          `${base}/api/pipelines/${IMPLEMENT_FULLY_PIPELINE_ID}/resolve`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              workspaceId,
+              input: { kind: "idea", idea: "new thing" },
+            }),
+          }
+        );
+        expect(ideaRes.status).toBe(400);
+        const ideaBody = (await ideaRes.json()) as { error: string };
+        expect(ideaBody.error).toMatch(/per-person ids/i);
+      }
+    );
+  });
+
+  it("refuses unknown formats with the must-match prefix and format-doc pointer", () => {
+    withTempWorkspace(
+      (workspace) => {
+        writeIndex(workspace, PER_PERSON_FIXTURE_INDEX);
+      },
+      (workspace) => {
+        try {
+          resolveImplementFullyKickoff(
+            workspace,
+            { kind: "feature-id", featureId: "dm58" },
+            BOUNDS
+          );
+          expect.fail("expected unknown-format failure");
+        } catch (err) {
+          expect(err).toBeInstanceOf(RoadmapResolveError);
+          expect((err as RoadmapResolveError).category).toBe("bad_request");
+          expect((err as RoadmapResolveError).message).toMatch(
+            /^featureId must match/
+          );
+          expect((err as RoadmapResolveError).message).toContain("b42");
+          expect((err as RoadmapResolveError).message).toContain("b-xy58");
+          expect((err as RoadmapResolveError).message).toContain(
+            "docs/roadmap-format.md"
+          );
+        }
+      }
+    );
+  });
+
+  it("maps malformed declarations to bad_request with the format-doc pointer", () => {
+    withTempWorkspace(
+      (workspace) => {
+        writeIndex(
+          workspace,
+          `# Roadmap
+<!-- id-format: b.*<n> -->
+
+## Backlog
+
+- **b42** Should not parse — malformed declaration.
+`
+        );
+      },
+      (workspace) => {
+        try {
+          resolveImplementFullyKickoff(
+            workspace,
+            { kind: "feature-id", featureId: "b42" },
+            BOUNDS
+          );
+          expect.fail("expected declaration failure");
+        } catch (err) {
+          expect(err).toBeInstanceOf(RoadmapResolveError);
+          expect((err as RoadmapResolveError).category).toBe("bad_request");
+          expect((err as RoadmapResolveError).message).toContain(
+            "docs/roadmap-format.md"
+          );
+        }
+      }
+    );
+  });
+
+  it("does not resolve a feature-shaped id that exists only in an unrelated P-table", () => {
+    withTempWorkspace(
+      (workspace) => {
+        writeIndex(workspace, PER_PERSON_FIXTURE_INDEX);
+      },
+      (workspace) => {
+        try {
+          resolveImplementFullyKickoff(
+            workspace,
+            { kind: "feature-id", featureId: "b99" },
+            BOUNDS
+          );
+          expect.fail("expected not_found");
+        } catch (err) {
+          expect(err).toBeInstanceOf(RoadmapResolveError);
+          expect((err as RoadmapResolveError).category).toBe("not_found");
+        }
       }
     );
   });

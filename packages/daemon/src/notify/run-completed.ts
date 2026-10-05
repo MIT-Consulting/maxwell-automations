@@ -1,4 +1,5 @@
 import {
+  classifyFinalGateStopReason,
   IMPLEMENT_FULLY_FINAL_GATE_WORKER_KEY,
   workerKeyFromConfigKey,
 } from "@lca/shared";
@@ -8,6 +9,7 @@ import { isImplementFullyContext } from "../runs/pipeline-handoff.js";
 export type RunCompletedNotifier = {
   runCompleted(runId: string, label?: string): void;
   pipelineComplete(runId: string, label?: string): void;
+  pipelineBlocked(runId: string, label?: string): void;
 };
 
 export type NotifyOnRunCompletedDeps = {
@@ -102,10 +104,19 @@ export function notifyOnRunCompleted(
     }
 
     if (automation && isFinalGateWorker(automation)) {
-      try {
-        deps.notifier.pipelineComplete(runId, label);
-      } catch {
-        // never let sink throw
+      const outcome = classifyFinalGateStopReason(run.chain_stop_reason);
+      if (outcome === "complete") {
+        try {
+          deps.notifier.pipelineComplete(runId, label);
+        } catch {
+          // never let sink throw
+        }
+      } else if (outcome === "blocked") {
+        try {
+          deps.notifier.pipelineBlocked(runId, label);
+        } catch {
+          // never let sink throw
+        }
       }
     }
   } catch {

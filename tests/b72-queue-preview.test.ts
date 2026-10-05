@@ -18,6 +18,7 @@ function entry(
   return {
     workspaceId: WS,
     after: [],
+    origin: "queue",
     runId: null,
     detail: null,
     createdAt: NOW,
@@ -49,6 +50,7 @@ function row(overrides: Partial<FeatureQueueEntryRow> & Pick<FeatureQueueEntryRo
     settled_at: null,
     updated_at: NOW,
     batch_digest_at: null,
+    origin: "queue",
     ...overrides,
   };
 }
@@ -109,7 +111,7 @@ describe("b72 queue preview", () => {
     expect(preview[0]?.reason).toBe("after dep");
   });
 
-  it("treats any running input row as queue busy and prevents Next", () => {
+  it("treats queue-owned running rows as queue busy and prevents Next", () => {
     const entries = [
       entry({ id: "e1", featureId: "a", position: 1, state: "queued" }),
       entry({
@@ -117,6 +119,7 @@ describe("b72 queue preview", () => {
         featureId: "busy",
         position: 0,
         state: "running",
+        origin: "queue",
         runId: "run-1",
       }),
     ];
@@ -125,6 +128,25 @@ describe("b72 queue preview", () => {
     expect(preview[0]).toMatchObject({
       readiness: "waiting",
       reason: "queue busy",
+    });
+  });
+
+  it("uses waiting for slot when only direct rows are running", () => {
+    const entries = [
+      entry({ id: "e1", featureId: "a", position: 2, state: "queued" }),
+      entry({
+        id: "direct",
+        featureId: "direct",
+        position: 1,
+        state: "running",
+        origin: "direct",
+        runId: "run-direct",
+      }),
+    ];
+    const preview = selectQueuePreview({ entries, slotBusy: false });
+    expect(preview[0]).toMatchObject({
+      readiness: "waiting",
+      reason: "waiting for slot",
     });
   });
 

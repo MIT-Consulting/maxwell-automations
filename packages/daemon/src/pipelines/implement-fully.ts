@@ -1264,7 +1264,10 @@ function copyPlanningProfiles(): ImplementFullyPlanningProfile[] {
  */
 export function computeWorkspacePreconditions(
   workspaceId: string,
-  workspacePath: string
+  workspacePath: string,
+  opts?: {
+    roadmapReadiness?: import("@lca/shared").RoadmapReadinessReport;
+  }
 ): PipelineWorkspacePreconditions {
   let gitRepo = false;
   let roadmapIndex = false;
@@ -1280,7 +1283,14 @@ export function computeWorkspacePreconditions(
   } catch {
     roadmapIndex = false;
   }
-  return { workspaceId, gitRepo, roadmapIndex };
+  return {
+    workspaceId,
+    gitRepo,
+    roadmapIndex,
+    ...(opts?.roadmapReadiness != null
+      ? { roadmapReadiness: opts.roadmapReadiness }
+      : {}),
+  };
 }
 
 /**

@@ -34,6 +34,23 @@ function git(args) {
   }
 }
 
+function readNodeFloor() {
+  const path = join(REPO_ROOT, "package.json");
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    throw new Error(`Could not read root package manifest at ${path}`);
+  }
+  const node = parsed?.engines?.node;
+  if (typeof node !== "string" || !/^>=\d+\.\d+(?:\.\d+)?$/.test(node.trim())) {
+    throw new Error(
+      `Missing or malformed engines.node in ${path} (expected >=X.Y or >=X.Y.Z)`
+    );
+  }
+  return node.trim();
+}
+
 function readStamp() {
   const path = join(REPO_ROOT, "version.json");
   try {
@@ -61,6 +78,7 @@ export function buildEmbed() {
     commit: git(["rev-parse", "--short", "HEAD"]),
     dirty: typeof porcelain === "string" && porcelain.length > 0,
     describe,
+    nodeFloor: readNodeFloor(),
   };
 }
 

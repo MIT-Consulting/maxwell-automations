@@ -35,6 +35,7 @@ import { InputHub } from "../packages/daemon/src/input/hub.ts";
 import { InputStore } from "../packages/daemon/src/input/store.ts";
 import { RunEngine } from "../packages/daemon/src/runs/engine.ts";
 import { TriggerManager } from "../packages/daemon/src/triggers/manager.ts";
+import { emptyFeatureIndex } from "./helpers/empty-tracker.ts";
 import { freeListenPort } from "./helpers/free-port.ts";
 
 afterEach(() => {
@@ -69,13 +70,13 @@ const SIX_ROLE_DEFAULTS: ResolvedSettings["pipelineRoleModels"] = {
 
 const featureArgs = ["--feature", DOCUMENTED_FEATURE_ID];
 
-const CLI_INDEX_PATH = join(
+const CLI_SOURCE_PATH = join(
   dirname(fileURLToPath(import.meta.url)),
   "..",
   "packages",
   "cli",
   "src",
-  "index.ts"
+  "cli.ts"
 );
 
 function stubExecutor(): Executor {
@@ -109,7 +110,7 @@ function writeRoadmapIndex(workspacePath: string): void {
   );
   const featureDir = join(workspacePath, "docs", "roadmap", DOCUMENTED_SLUG);
   mkdirSync(featureDir, { recursive: true });
-  writeFileSync(join(featureDir, "00-index.md"), "# b56\n", "utf8");
+  writeFileSync(join(featureDir, "00-index.md"), emptyFeatureIndex("b56"), "utf8");
   writeFileSync(join(featureDir, "prd.md"), "# prd\n", "utf8");
 }
 
@@ -495,7 +496,7 @@ describe("b56.08 formatInputRequest", () => {
 
 describe("b56.08 followRun answer retryability (source contract)", () => {
   it("adds request id to answered only after client.answer succeeds", () => {
-    const src = readFileSync(CLI_INDEX_PATH, "utf8");
+    const src = readFileSync(CLI_SOURCE_PATH, "utf8");
     const followStart = src.indexOf("async function followRun(");
     expect(followStart).toBeGreaterThan(-1);
     const nextFn = src.indexOf("\nasync function ", followStart + 1);
@@ -524,7 +525,7 @@ describe("b56.08 followRun answer retryability (source contract)", () => {
 
 describe("b56.08 help text", () => {
   it("documents --research-approval and both valid values", () => {
-    const src = readFileSync(CLI_INDEX_PATH, "utf8");
+    const src = readFileSync(CLI_SOURCE_PATH, "utf8");
     expect(src).toContain("--research-approval");
     expect(src).toContain("none|before-planning");
     for (const policy of IMPLEMENT_FULLY_RESEARCH_APPROVAL_POLICIES) {

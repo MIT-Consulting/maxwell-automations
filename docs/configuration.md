@@ -99,6 +99,24 @@ and only when that checkout is a clean tag pin with no local commits and no
 active runs. Factory checkouts stay `0.0.0-dev` and are not told to move to a
 public tag. Details are in [Forking and upgrades](./forking.md).
 
+`max update --apply` and `--dry-run` fetch the target release tag into
+`refs/max/update-target` before any daemon stop or worktree change. They print
+the target `engines.node` requirement and the **Upgrade actions** subsection
+from that tag's changelog. Dry-run may move only that private ref; it does not
+stop the daemon, reset HEAD, install, or build. A target above this machine's
+Node floor is refused with `node-floor` before mutation.
+
+Root `.npmrc` sets **`engine-strict=true`**, so `npm ci` / `npm install` refuse
+when Node does not satisfy `package.json` `engines.node` (currently `>=22.13`
+from `@cursor/sdk` ≥1.0.32). Prefer Node **22 or 24 LTS**; the bootstrap and
+doctor Environment block use the same refusal wording.
+
+Every `CHANGELOG.md` entry carries exactly one **`### Upgrade actions`**
+subsection (`none` when no manual steps). Public release export runs
+`npm run release:preflight` (and export dry-run runs it again) — a raised Node
+floor must be documented there and requires at least a **minor** version bump.
+See `.cursor/skills/max-publish-public/SKILL.md`.
+
 ### Phone notify (ntfy)
 
 Optional phone push (ntfy) and OS toasts for daemon-wide alert events. All
@@ -121,7 +139,7 @@ still require `lca restart` — see the table above.
 #### Event prefs (`settings.notify.events`)
 
 Optional partial map of alert id → `{ toast, ntfy }`. Omitted ids inherit
-**smart defaults** (below). Supported ids (thirteen total, catalog order):
+**smart defaults** (below). Supported ids (fourteen total, catalog order):
 
 | Alert id | Default toast | Default ntfy | Notes |
 | --- | --- | --- | --- |
@@ -129,7 +147,8 @@ Optional partial map of alert id → `{ toast, ntfy }`. Omitted ids inherit
 | `run_failed` | on | on | Run ended in error |
 | `auth_expired` | on | on | Cursor auth/session failure |
 | `run_completed` | **off** | **off** | Every engine `completed` transition (quiet) |
-| `pipeline_complete` | on | on | implement-fully `final-gate` only (not per-step workers) |
+| `pipeline_complete` | on | on | implement-fully `final-gate` only when stop reason starts with `complete:` |
+| `pipeline_blocked` | on | on | implement-fully `final-gate` only when stop reason starts with `blocked:` or `deadlock:` |
 | `queue_batch_complete` | on | on | Serial implement-fully queue drained for one workspace |
 | `plan_approval_required` | on | on | Guided approve-plan parks; **replace-not-double** with generic `needs_input` |
 | `ux_approval_required` | on | on | Catalog-reserved; no product producer yet — silence expected |
@@ -142,7 +161,12 @@ Optional partial map of alert id → `{ toast, ntfy }`. Omitted ids inherit
 **Producer notes (unchanged behavior):**
 
 - `pipeline_complete` fires only when implement-fully `final-gate` settles
-  `completed` — not per-step workers, wave integrate, or `complete:` enqueue.
+  `completed` **and** `chain_stop_reason` starts with `complete:` — not per-step
+  workers, wave integrate, or the `complete:` enqueue itself.
+- `pipeline_blocked` fires when the same final-gate worker settles `completed` with
+  `chain_stop_reason` starting `blocked:` or `deadlock:`. Missing, empty, or other
+  stop reasons emit neither loud pipeline alert (quiet `run_completed` still
+  follows existing deferral rules).
 - `queue_batch_complete` fires once when a workspace's **serial** implement-fully
   queue drains (no `running` or `queued` rows left). `blocked` rows do not hold the
   batch open. Cancel-only batches stay silent. Per-feature failures still emit
@@ -192,7 +216,7 @@ Open **Settings** → **Alerts** (daemon-global; works with zero workspaces).
 The panel exposes:
 
 - ntfy connection (enable, topic, optional server/token) and **Test send**
-- toast × ntfy matrix for all thirteen alert ids
+- toast × ntfy matrix for all fourteen alert ids
 - **Reset to defaults** (draft only until Save)
 - **Save alerts** (PATCH; hot-reloads notify without restart)
 
@@ -265,8 +289,11 @@ paths, so nothing else changes.
 > listener — the daemon **multi-binds** loopback + that host, so the CLI, git-hook
 > triggers, and the MCP `ask_user` bridge keep reaching `127.0.0.1`. If the
 > configured Tailscale IP isn't assigned at boot (e.g. Tailscale not up yet), the
-> daemon logs a warning and **degrades to loopback-only** instead of failing to
-> start.
+> daemon logs a warning, **degrades to loopback-only** instead of failing to
+> start, and **retries the bind every 15s in the background** until the address
+> appears — remote access comes back on its own once Tailscale is up. While
+> degraded, `lca status` shows `remote: ON — NOT BOUND` and a `listening:` line
+> with the live bound set (`/api/status.bindAddresses` + `unboundHosts`).
 
 2. **Broad bind (escape hatch).** `lca remote on --insecure-any` binds `0.0.0.0`
    (all interfaces) with no device allowlist — only for hosts that can't enumerate
@@ -362,19 +389,19 @@ everywhere an agent is started or continued. Legacy scalar strings remain valid.
 **YAML — scalar (legacy):**
 
 ```yaml
-model: grok-4.5
+model: grok-4.6
 ```
 
 **YAML — structured (parameters):**
 
 ```yaml
 model:
-  id: grok-4.5
+  id: grok-4.6
   params:
-    - id: reasoning
+    - id: effort
       value: high
     - id: fast
-      value: "true"   # boolean-like params are strings in the SDK
+      value: "false"  # boolean-like params are strings in the SDK
 ```
 
 Parameter ids and allowed values come from `GET /api/models` (the calling
@@ -399,8 +426,12 @@ or automation defaults.
 `null`) and canonical `modelSelection`. Mutations accept either field; sending
 both is allowed only when they agree. Conflicting pairs return `400`.
 
-**CLI:** `lca run` does not take a `--model` flag — it triggers the automation and
-executes whatever selection is already persisted.
+**CLI:** `lca run` / `max run` takes only an automation id or name — extra argv
+are refused (including kickoff-shaped flags such as `--feature` or `--profile`).
+Start pipeline workers with `lca implement-fully` / `max implement-fully`, not
+`run`. The daemon also refuses manual context-less triggers of `generated:`
+workers with the same pointer. `run` does not take a `--model` flag — it triggers
+the automation and executes whatever selection is already persisted.
 
 Workspace chat defaults use the same scalar/structured `model` syntax in
 `<workspace>/.cursor/chat.yaml` (see also the dashboard **Settings** view).
@@ -478,7 +509,7 @@ stop-reason prefixes, barrier semantics) live in
 covers daemon wiring only. Wave recovery procedures:
 [`docs/troubleshooting.md`](./troubleshooting.md).
 
-**Operator kickoff:** `lca implement-fully --feature <bN>` or
+**Operator kickoff:** `lca implement-fully --feature b42` (or `b-dm58`, …) or
 `lca implement-fully --idea "<text>"` (see `lca help`), or the
 `/implement-fully` skill installed via `npm run install:skill`. Both call
 resolve → provision → introspect → `POST /api/runs` below.
@@ -614,85 +645,144 @@ comment); durable findings live in `<featureDir>/research.md` (Files-viewer
 linkable) and survive reload/restart. Cancel the run to abort. An armed policy
 without a resolved researcher is refused before any provision or trigger.
 
+The recipes below are the calibrated house set as of 2026-10-04 (the *why* per
+seat is in [`docs/operating-model.md`](./operating-model.md) § Model routing).
+Plan and review are decision work, so Grok runs `effort=high` with `fast`
+**off** there; implement and docs are write throughput, so Composer runs
+`fast` on. Every id and parameter must exist in the live `GET /api/models`
+catalog — a stale id is refused at kickoff preflight, not at the first phase.
+
 ```yaml
 settings:
-  # Default recipe (synthetic profile id "default")
+  # Default recipe (synthetic profile id "default") — same seats as fast-moderate.
   pipelineRoleModels:
-    planner: gpt-5.6-sol
-    implementer: grok-4.5
-    reviewer: claude-opus-5
-    docs: composer-2.5
+    planner:
+      id: grok-4.6
+      params:
+        - { id: effort, value: high }
+        - { id: fast, value: "false" }
+    implementer:
+      id: composer-2.5
+      params:
+        - { id: fast, value: "true" }
+    reviewer:
+      id: grok-4.6
+      params:
+        - { id: effort, value: high }
+        - { id: fast, value: "false" }
+    docs:
+      id: composer-2.5
+      params:
+        - { id: fast, value: "true" }
 
   # Named recipes — switch at kickoff without rewriting the default map.
-  # `deep` / `max` below are operator-authored examples, not built-in product
-  # profiles; every model id must match the live SDK catalog.
   pipelineRoleModelProfiles:
+    # Cheap unattended lane: S/M features, release cleanups, doc-heavy work.
     # Calibrated on b51 (four-phase M feature, ~42m including one transient retry).
     fast-moderate:
       planner:
-        id: grok-4.5
+        id: grok-4.6
         params:
           - { id: effort, value: high }
-          - { id: fast, value: "true" }
+          - { id: fast, value: "false" }
       implementer:
         id: composer-2.5
         params:
           - { id: fast, value: "true" }
       reviewer:
-        id: grok-4.5
+        id: grok-4.6
         params:
           - { id: effort, value: high }
-          - { id: fast, value: "true" }
+          - { id: fast, value: "false" }
       docs:
         id: composer-2.5
         params:
           - { id: fast, value: "true" }
-    cheap:
-      planner: grok-4.5
-      implementer: composer-2.5
-      reviewer: grok-4.5
-      docs: composer-2.5
-    # Sol plans once at skeleton; Grok implements; Composer reviews/docs.
-    deep-fast:
-      architect: gpt-5.6-sol
+
+    # Opt-in for L features: Sol architects the skeleton once, Opus 5.5 holds the
+    # terminal gate, Fable researches only when --research-approval is armed.
+    # Phase plan/review/implement stay on the cheap stack. Cross-family review
+    # holds (Grok reviews Composer; Opus gates both).
+    quality:
+      architect:
+        id: gpt-5.6-sol
+        params:
+          - { id: reasoning, value: medium }
       planner:
-        id: grok-4.5
+        id: grok-4.6
         params:
           - { id: effort, value: high }
-          - { id: fast, value: "true" }
-      implementer: composer-2.5
-      reviewer: grok-4.5
-      docs: composer-2.5
-    deep:
-      planner: gpt-5.6-sol
-      implementer: grok-4.5
-      reviewer:
-        id: claude-opus-5
+          - { id: fast, value: "false" }
+      implementer:
+        id: composer-2.5
         params:
-          - id: reasoning
-            value: high
-      docs: composer-2.5
-    max:
-      researcher: gpt-5.4-high-fast
-      planner: gpt-5.6-sol
-      implementer: grok-4.5
-      reviewer: claude-opus-5
-      docs: composer-2.5
-      gatekeeper: gpt-5.4-high-fast
+          - { id: fast, value: "true" }
+      reviewer:
+        id: grok-4.6
+        params:
+          - { id: effort, value: high }
+          - { id: fast, value: "false" }
+      docs:
+        id: composer-2.5
+        params:
+          - { id: fast, value: "true" }
+      gatekeeper:
+        id: claude-opus-5-5
+        params:
+          - { id: effort, value: high }
+          - { id: fast, value: "false" }
+      researcher:
+        id: claude-fable-5-1
+        params:
+          - { id: thinking, value: "true" }
+          - { id: effort, value: high }
 
-  # optional — pre-select cheap at kickoff; omit → "default"
-  # Do not set defaultPipelineRoleModelProfile: max (expensive models stay opt-in).
-  defaultPipelineRoleModelProfile: cheap
+    # Dashboard / design phases: Grok plans, Composer writes, Gemini 3.8 Flash
+    # reviews each phase for polish, Opus gates. Do not seat Sonnet here.
+    ui-polish:
+      architect:
+        id: gpt-5.6-sol
+        params:
+          - { id: reasoning, value: medium }
+      planner:
+        id: grok-4.6
+        params:
+          - { id: effort, value: high }
+          - { id: fast, value: "false" }
+      implementer:
+        id: composer-2.5
+        params:
+          - { id: fast, value: "true" }
+      reviewer:
+        id: gemini-3.8-flash
+        params:
+          - { id: reasoning_effort, value: high }
+      docs:
+        id: composer-2.5
+        params:
+          - { id: fast, value: "true" }
+      gatekeeper:
+        id: claude-opus-5-5
+        params:
+          - { id: effort, value: high }
+          - { id: fast, value: "false" }
+
+  # optional — pre-select a profile at kickoff; omit → "default"
+  # Keep the expensive seats (quality / ui-polish) opt-in rather than default.
+  defaultPipelineRoleModelProfile: fast-moderate
 ```
+
+Not seated anywhere: Grok 4.7 (untrusted for plan / review / gate until it
+passes an unattended audition) and the Sonnet family (b64 soak).
 
 Do not define a named profile id `default` in YAML — that id is reserved for
 `pipelineRoleModels`. Structured selections (b35 params) work inside any recipe
 map; scalar and structured forms can be mixed per role.
 
-`fast-moderate` is a measured starting point, not a universal default.
-Before kickoff, settle material scope decisions, restart after recipe edits,
-and confirm the concrete role params with
-`lca implement-fully --feature <bN> --dry-run`.
+`fast-moderate` is the measured house default for S/M work; reach for
+`quality` on L features and `ui-polish` on dashboard phases. Before kickoff,
+settle material scope decisions, restart after recipe edits, and confirm the
+concrete role params with `lca implement-fully --feature b42 --dry-run`.
 
 Recipes above are the *how*. Attended vs unattended trust is an operator
 calibration choice, not a product default.
@@ -771,6 +861,104 @@ kickoff variables) remains on the per-run engine snapshot only (`chain_context_j
 from the automation’s `generated:` config key and `chainDepth` via `@lca/shared`
 helpers (`describePipelineStep`, `workerKeyFromConfigKey`).
 
+### Pipeline snapshot, watch, and steering
+
+Outside orchestrators and agents can observe and steer an implement-fully pipeline
+without the dashboard. The daemon owns a **snapshot** per root run (current step /
+role / model, elapsed times, depth vs budget, waves, waiting / halt with recovery
+command, and explicit `outcome`) plus a **cursor-based long-poll feed** over shared
+`run.*` lifecycle events keyed by global `run_events.id`. `lca doctor` reads the
+same snapshot when a root id is available.
+
+**Lookup:**
+
+```http
+GET /api/pipeline-runs?workspace=<id>&feature=<feature-id>
+GET /api/pipeline-runs/<rootRunId>
+GET /api/pipeline-runs/<rootRunId>/events?since=<cursor>&wait=<seconds>
+```
+
+`feature` resolves the newest implement-fully root in that workspace. Positional
+A feature id (`b42`, `b-dm58`, …) or a root run id work on the CLI; `--feature <feature-id>` scopes every operator
+verb to that pipeline's root and waiting run where applicable.
+
+**Watch** (blocking long-poll, not a stream):
+
+```bash
+max watch b81 --until needs_input,halted,blocked,green --json
+max watch <rootRunId> -w C:\Users\dev\my-repo --since 12045 --timeout 30m
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--until <csv>` | Exit when snapshot or feed matches any listed reason (see table below). Omit → exit on any terminal `outcome`. |
+| `--since <cursor>` | Resume from a prior `run_events.id`. Unknown or pruned cursors are valid lower bounds (not `404`). |
+| `--timeout <dur>` | Overall client deadline (`30s`, `5m`, …). |
+| `--json` | One JSON object on stdout only (no log lines mixed in). |
+
+Default server long-poll wait is **25 s** per segment; maximum server wait is **55 s**.
+The first poll uses `wait=0` so an already-terminal snapshot returns immediately.
+
+**`--until` vocabulary and exit codes** (frozen):
+
+| Reason / condition | Exit code |
+| --- | ---: |
+| `green`, `step`, `paused` | 0 |
+| `needs_input` | 10 |
+| `halted` | 11 |
+| `blocked`, `deadlock` | 12 |
+| `aborted`, `failed` | 13 |
+| `--timeout` elapsed | 14 |
+| Runtime / daemon error | 1 |
+| Usage / bad flags | 2 |
+
+**Snapshot `outcome` enum:** `running`, `green`, `blocked`, `deadlock`, `aborted`,
+`failed`. A recoverable agent halt is `failed` with a non-null `halt.recoveryCommand`
+(usually `max escalate <runId> retry|skip|abort`). `blocked` / `deadlock` are
+final-gate or coordinator stop prefixes, not transient quiet between phases.
+
+**`max watch --json` envelope** (stable fields):
+
+```json
+{
+  "rootRunId": "…",
+  "snapshot": { "outcome": "running", "…": "…" },
+  "cursor": 12045,
+  "reason": "needs_input",
+  "events": []
+}
+```
+
+`events` is optional diagnostic detail from the blocking session. Preserve
+`rootRunId` and `cursor` across resumed turns.
+
+**Actor attribution** (not auth): set `LCA_ACTOR` or send `X-LCA-Actor` on steer
+requests. Max **64** printable characters; control characters rejected. This labels
+durable lifecycle events only — it is **not** the remote control token
+(`X-LCA-Control-Token`).
+
+**Pipeline-level steering** (forward-only unless noted):
+
+| Command | Effect |
+| --- | --- |
+| `max directive b42 "<text>"` (or root run id) | Append a durable note for **later** steps. Does **not** reach the active worker — use `max message` / `max interrupt` for the live step. |
+| `max escalate --feature b-dm58 --role <role>=<model>[?k=v]` | Running role override (no halt action). Merged before the next spawn. |
+| `max pipeline-stop b42 [--after-step] [--reason <text>]` (or root run id) | Stop chaining after the current step settles. Refuses wave-track frontiers (`409`; use `lca wave <id> retry\|abort`). |
+
+`max stop` / `lca stop` remain **daemon teardown** (`down`) — never use them for
+stop-after-step.
+
+**Directive caps** (shared constants): at most **64** directives per root (oldest
+dropped); note body **8 KiB** UTF-8; at most **8** roles per role-override.
+Prompt injection keeps **newest** notes and renders oldest-to-newest inside
+`CHAIN_RENDERED_PROMPT_MAX_BYTES` minus a **512-byte** reserve. Stop reason detail
+is bounded to **240** characters and persisted as
+`operator-stop: <actor-id-or-operator> <reason>`. Reserved stop prefixes
+(`complete:`, `blocked:`, `deadlock:`) are rejected.
+
+See [implement-fully protocol](./implement-fully-protocol.md) § Operator steering
+and [troubleshooting](./troubleshooting.md) for recovery ownership.
+
 ### Serial implement-fully queue (`lca queue`)
 
 Overnight **serial** chaining for implement-fully: enqueue multiple features in one
@@ -783,18 +971,27 @@ multi-feature concurrency is not shipped yet (serial queue only).
 
 | Command | Meaning |
 | --- | --- |
-| `lca queue add --feature <bN>` | Enqueue documented work (options mirror implement-fully, including `--dry-run`) |
+| `lca queue add --feature b42` | Enqueue documented work (options mirror implement-fully, including `--dry-run`) |
 | `lca queue add --idea "<text>"` | Enqueue new work from an idea |
 | `lca queue list` | List entries for all workspaces (bare `lca queue` aliases list) |
 | `lca queue rm <id>` | Cancel a waiting (`queued` or `blocked`) entry |
 | `lca queue clear` | Cancel all `queued` and `blocked` entries |
 
 **`--after`:** comma-separated feature ids (`b58`, `b49`, …). Dependencies must
-already exist as queue rows or prior `done` entries in the same workspace. The CLI
-parses the flag; the daemon validates edges at enqueue. A dependent stays queued
-until the dependency is **`done`** (green `final-gate`). Intermediate worker
-success does not settle the predecessor, and a false `failed` does not park
-`--after` rows.
+exist as queue rows in the same workspace. A direct `lca implement-fully` kickoff
+also creates a queue row (`origin: direct`), so orchestrators can queue behind
+a pipeline they started outside `queue add`. Historical roots without a row are
+**lazy-adopted** on first `--after` validation when the workspace still has a
+matching implement-fully root run. Truly unknown ids keep the existing
+`unknown dependency feature id: <id>` error. A dependent stays queued until the
+dependency is **`done`** (green `final-gate`). Intermediate worker success does
+not settle the predecessor, and a false `failed` does not park `--after` rows.
+
+**Origin:** `queue` rows come from `lca queue add`; `direct` rows are recorded
+best-effort after a successful implement-fully kickoff (CLI, dashboard, or REST).
+Direct rows settle like queue rows but are excluded from `queue_batch_complete`
+digests. `lca queue list` marks direct rows with `[direct]`; cancel a running
+direct pipeline with `lca cancel <runId>`, not `queue rm`.
 
 **Entry states:** `queued`, `running`, `done`, `failed`, `blocked`, `cancelled`.
 The queue evaluates a finished step only after the chain runner has spawned its
@@ -819,6 +1016,22 @@ Settings → **Alerts** or `settings.notify.events.queue_batch_complete` (hot-re
 
 Bare `lca doctor` prints a one-line **Queue** summary when entries exist.
 
+## Roadmap readiness (HTTP)
+
+The daemon computes readiness from bounded workspace filesystem facts (root,
+`docs/`, and `docs/roadmap/` only — same caps as the file viewer). The CLI and
+dashboard are thin clients; they do not re-implement analysis.
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/roadmap-readiness` | Per-workspace summaries (`state` + impact counts) |
+| `GET /api/workspaces/:id/roadmap-readiness` | Full report (`findings`, `features`, `candidates`) |
+| `GET /api/workspaces/:id/roadmap-fix-plan` | Additive CLI repair plan with content hash (never writes) |
+
+CLI: `max doctor` / `max doctor <workspace>` / `--json` / `--report`; `max roadmap fix`
+shows a diff and writes locally after confirmation. See `docs/roadmap-format.md` §
+Adopting an existing backlog and `docs/troubleshooting.md` § Roadmap readiness.
+
 ## Environment variables
 
 | Var | Purpose |
@@ -841,6 +1054,7 @@ Bare `lca doctor` prints a one-line **Queue** summary when entries exist.
 | `LCA_PIPELINE_AUTO_ESCALATE_MAX_PER_PIPELINE` | Positive integer cap on daemon auto-escalations per pipeline lineage — see `settings.pipelineAutoEscalateMaxPerPipeline` above. |
 | `LCA_PIPELINE_HALT_DISCOVERY` | Enable/disable best-effort halt-discovery advisories after unrecovered halts (`0`/`false` off, `1`/`true` on; default on) — see `settings.pipelineHaltDiscovery` above. Restart required. |
 | `LCA_PIPELINE_MODEL_PREFLIGHT` | Enable/disable the kickoff role-model probe (`0`/`false` off, `1`/`true` on; default on) — see `settings.pipelineModelPreflight` above. Restart required. |
+| `LCA_ACTOR` | Optional orchestrator label sent as `X-LCA-Actor` on steer requests (max 64 printable chars; attribution only, not the control token). |
 
 ## Auth (decided)
 

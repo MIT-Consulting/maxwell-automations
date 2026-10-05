@@ -32,6 +32,7 @@ const EVENT_LABELS: Record<AlertNotifyEvent, string> = {
   auth_expired: "Auth expired",
   run_completed: "Run completed",
   pipeline_complete: "Pipeline complete",
+  pipeline_blocked: "Pipeline blocked",
   queue_batch_complete: "Serial queue batch complete",
   plan_approval_required: "Plan approval required",
   ux_approval_required: "UX approval required",

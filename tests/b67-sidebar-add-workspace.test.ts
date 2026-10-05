@@ -19,6 +19,8 @@ describe("b67 sidebar Add workspace", () => {
     const form = readSrc("packages/dashboard/src/AddWorkspaceForm.tsx");
     expect(form).toContain("api.createWorkspace");
     expect(form).toContain("api.pickWorkspaceFolder");
+    expect(form).toContain("getRoadmapReadinessSummaries");
+    expect(form).toContain("post-register-readiness");
     expect(form).toContain("Register workspace");
 
     const modal = readSrc("packages/dashboard/src/AutomationModal.tsx");

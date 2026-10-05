@@ -24,6 +24,7 @@ import {
 import { execFileSync } from "node:child_process";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runReleasePreflight } from "./release-preflight.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = resolve(__dirname, "..");
@@ -47,6 +48,7 @@ function joinLit(parts) {
 
 /** Explicit include prefixes (repo-relative, forward slashes). */
 export const INCLUDE_PREFIXES = [
+  ".npmrc",
   "package.json",
   "package-lock.json",
   "tsconfig.json",
@@ -57,6 +59,7 @@ export const INCLUDE_PREFIXES = [
   "version.json",
   "CONTRIBUTING.md",
   "README.md",
+  "AGENTS.md",
   ".gitignore",
   "gitleaks.toml",
   ".github/workflows/ci.yml",
@@ -73,6 +76,13 @@ export const INCLUDE_PREFIXES = [
   "docs/troubleshooting.md",
   "docs/roadmap-format.md",
   "docs/forking.md",
+];
+
+/** Skill dirs copied into the public skills companion repo. */
+export const SKILL_SOURCES = [
+  "implement-fully",
+  "plan-implement-fully",
+  "max-setup",
 ];
 
 const SKIP_DIR_NAMES = new Set([
@@ -255,9 +265,24 @@ export function publicVersionJson(version) {
 }
 
 /**
- * @param {{ outDir: string, dryRun: boolean, version?: string }} opts
+ * @param {{
+ *   outDir: string,
+ *   dryRun: boolean,
+ *   version?: string,
+ *   runPreflight?: (opts?: { repoRoot?: string }) =>
+ *     | { ok: true, newestVersion: string | null, previousTag: string | null }
+ *     | { ok: false, errors: string[] },
+ * }} opts
  */
 export function exportPublic(opts) {
+  const preflightFn = opts.runPreflight ?? runReleasePreflight;
+  const preflight = preflightFn({ repoRoot: REPO_ROOT });
+  if (!preflight.ok) {
+    throw new Error(
+      `export: release preflight failed:\n${preflight.errors.map((e) => `  - ${e}`).join("\n")}`
+    );
+  }
+
   const outDir = resolve(opts.outDir);
   const codeDest = join(outDir, CODE_REPO);
   const skillsDest = join(outDir, SKILLS_REPO);
@@ -321,8 +346,7 @@ export function exportPublic(opts) {
     }
   }
 
-  const skillSources = ["implement-fully", "plan-implement-fully"];
-  for (const name of skillSources) {
+  for (const name of SKILL_SOURCES) {
     const srcDir = join(REPO_ROOT, "skills", name);
     if (!existsSync(srcDir)) continue;
     const walk = listIncludedFiles(srcDir, `skills/${name}`);

@@ -1,11 +1,18 @@
 import { z } from "zod";
 import type { ResolveImplementFullyKickoffRequest } from "../types/api.js";
+import {
+  DEFAULT_FEATURE_FORMAT_TEMPLATE,
+  ROADMAP_FORMAT_DOC,
+  ROADMAP_ID_CANDIDATE_RE,
+} from "../roadmap-ids.js";
 import { CHAIN_VALUE_MAX_LENGTH } from "./run.js";
 
 const featureIdSchema = z
   .string()
   .trim()
-  .regex(/^b\d+$/, { message: "featureId must match ^b\\d+$" });
+  .regex(ROADMAP_ID_CANDIDATE_RE, {
+    message: `featureId must match ${DEFAULT_FEATURE_FORMAT_TEMPLATE} (e.g. b42, b-dm58). See ${ROADMAP_FORMAT_DOC}.`,
+  });
 
 const ideaSchema = z
   .string()

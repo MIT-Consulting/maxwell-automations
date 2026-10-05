@@ -1,6 +1,7 @@
 import {
   modelSelectionSummary,
   normalizeModelSelection,
+  withActorIdPayload,
   workerKeyFromConfigKey,
   type ChainRunContext,
   type ModelSelection,
@@ -119,14 +120,18 @@ function escalatePayload(
   recoveryDecision:
     | Extract<PipelineHaltRecoveryDecision, { action: "retry" | "skip" }>
     | undefined,
-  roleOverrides?: Record<string, ModelSelection>
+  roleOverrides?: Record<string, ModelSelection>,
+  actorId?: string
 ): Record<string, unknown> {
-  const payload: Record<string, unknown> = {
-    action,
-    actor,
-    reason: reason ?? null,
-    childRunId,
-  };
+  const payload: Record<string, unknown> = withActorIdPayload(
+    {
+      action,
+      actor,
+      reason: reason ?? null,
+      childRunId,
+    },
+    actorId
+  );
   if (roleOverrides) {
     payload.roleModelOverrides = roleOverrides;
   }
@@ -192,7 +197,15 @@ export async function escalateRun(
         store.appendEvent(
           runId,
           "run.pipeline-escalated",
-          escalatePayload("abort", actor, request.reason, null, undefined)
+          escalatePayload(
+            "abort",
+            actor,
+            request.reason,
+            null,
+            undefined,
+            undefined,
+            request.actorId
+          )
         );
         onLog(`Escalation abort (idempotent) for run ${runId}`);
         return {
@@ -252,7 +265,15 @@ export async function escalateRun(
         store.appendEvent(
           runId,
           "run.pipeline-escalated",
-          escalatePayload("abort", actor, request.reason, null, undefined)
+          escalatePayload(
+            "abort",
+            actor,
+            request.reason,
+            null,
+            undefined,
+            undefined,
+            request.actorId
+          )
         );
         return {
           ok: true,
@@ -293,7 +314,15 @@ export async function escalateRun(
     store.appendEvent(
       runId,
       "run.pipeline-escalated",
-      escalatePayload("abort", actor, request.reason, null, undefined)
+      escalatePayload(
+        "abort",
+        actor,
+        request.reason,
+        null,
+        undefined,
+        undefined,
+        request.actorId
+      )
     );
     onLog(`Escalation abort for run ${runId}: ${stopReason}`);
     return {
@@ -364,7 +393,8 @@ export async function escalateRun(
         request.reason,
         childRunId,
         recoveryDecision,
-        roleOverrides
+        roleOverrides,
+        request.actorId
       )
     );
     onLog(`Escalation retry ${runId} → run ${childRunId}`);
@@ -492,7 +522,8 @@ export async function escalateRun(
       request.reason,
       childRunId,
       recoveryDecision,
-      roleOverrides
+      roleOverrides,
+      request.actorId
     )
   );
   onLog(`Escalation skip ${runId} → run ${childRunId} (${chainNext})`);

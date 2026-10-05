@@ -1,4 +1,15 @@
-import { compareSemver, isFactoryIdentity, type VersionIdentity } from "@lca/shared";
+import {
+  compareSemver,
+  extractUpgradeActions,
+  formatRunningNodeLabel,
+  formatUpgradeActionsLines,
+  isFactoryIdentity,
+  parseNodeFloorFromPackageManifest,
+  parseNodeFloorRequirement,
+  satisfiesNodeFloor,
+  type UpgradeActionsExtract,
+  type VersionIdentity,
+} from "@lca/shared";
 
 export type ApplyRefusal =
   | "factory"
@@ -7,7 +18,9 @@ export type ApplyRefusal =
   | "active-runs"
   | "dev-mode"
   | "bad-tag"
-  | "not-newer";
+  | "not-newer"
+  | "node-floor"
+  | "malformed-target";
 
 export type ApplyFacts = {
   checkout: VersionIdentity | null;
@@ -23,6 +36,17 @@ export type ApplyFacts = {
 export type ApplyDecision =
   | { ok: true; targetTag: string; targetVersion: string }
   | { ok: false; code: ApplyRefusal; message: string };
+
+export type ApplyTargetMetadata = {
+  targetTag: string;
+  targetVersion: string;
+  nodeRequirement: string;
+  upgradeActions: UpgradeActionsExtract;
+};
+
+export type PreflightResult =
+  | { ok: true; metadata: ApplyTargetMetadata }
+  | { ok: false; code: ApplyRefusal; message: string; metadata?: ApplyTargetMetadata };
 
 const RELEASE_TAG = /^v(\d+\.\d+\.\d+)$/;
 
@@ -109,6 +133,18 @@ export function assessUpdateApply(facts: ApplyFacts): ApplyDecision {
   return { ok: true, targetTag, targetVersion };
 }
 
+export function formatNodeFloorApplyRefusal(input: {
+  tag: string;
+  requirement: string;
+  running: string;
+}): string {
+  const running = formatRunningNodeLabel(input.running);
+  return (
+    `${input.tag} needs Node ${input.requirement.trim()}; this machine runs ${running}. ` +
+    "Install Node, then re-run."
+  );
+}
+
 export function applyPlanLines(repo: string, targetTag: string): string[] {
   return [
     `Apply ${targetTag} from ${repo}`,
@@ -122,6 +158,15 @@ export function applyPlanLines(repo: string, targetTag: string): string[] {
   ];
 }
 
+export function formatPreflightReport(metadata: ApplyTargetMetadata): string[] {
+  const lines = [
+    `Target Node requirement: ${metadata.nodeRequirement}`,
+    "Upgrade actions",
+    ...formatUpgradeActionsLines(metadata.upgradeActions).map((line) => `  ${line}`),
+  ];
+  return lines;
+}
+
 export type ApplyOps = {
   git: (args: string[]) => string;
   npm: (args: string[]) => void;
@@ -131,17 +176,130 @@ export type ApplyOps = {
   log: (line: string) => void;
 };
 
+function gitFetchTargetRef(args: {
+  fetchUrl: string;
+  targetTag: string;
+  token?: string;
+  git: (args: string[]) => string;
+}): void {
+  const fetchArgs = [
+    "fetch",
+    "--no-tags",
+    args.fetchUrl,
+    `refs/tags/${args.targetTag}:refs/max/update-target`,
+  ];
+  if (args.token) {
+    args.git(["-c", `http.extraheader=AUTHORIZATION: bearer ${args.token}`, ...fetchArgs]);
+  } else {
+    args.git(fetchArgs);
+  }
+}
+
 /**
- * Mutates the checkout. Caller has already passed `assessUpdateApply`.
- * `wasRunning` controls whether a failed apply leaves the daemon down.
+ * Fetch the target tag into refs/max/update-target and inspect package.json +
+ * CHANGELOG.md before any daemon stop or worktree mutation.
  */
-export async function executeUpdateApply(args: {
-  root: string;
-  repo: string;
+export function preflightUpdateTarget(args: {
   fetchUrl: string;
   targetTag: string;
   targetVersion: string;
+  runningNode: string;
   token?: string;
+  ops: Pick<ApplyOps, "git" | "log">;
+}): PreflightResult {
+  const { ops, targetTag, targetVersion } = args;
+  ops.log(`Fetch ${targetTag} into refs/max/update-target`);
+  try {
+    gitFetchTargetRef({
+      fetchUrl: args.fetchUrl,
+      targetTag,
+      token: args.token,
+      git: ops.git,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      code: "malformed-target",
+      message: `Could not fetch ${targetTag}: ${message}`,
+    };
+  }
+
+  let manifestText: string;
+  let changelogText: string;
+  try {
+    manifestText = ops.git(["show", "refs/max/update-target:package.json"]);
+    changelogText = ops.git(["show", "refs/max/update-target:CHANGELOG.md"]);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      code: "malformed-target",
+      message: `Target ${targetTag} is missing package.json or CHANGELOG.md: ${message}`,
+    };
+  }
+
+  const nodeRequirement = parseNodeFloorFromPackageManifest(manifestText);
+  if (!nodeRequirement) {
+    return {
+      ok: false,
+      code: "malformed-target",
+      message: `Target ${targetTag} package.json has no engines.node requirement.`,
+    };
+  }
+  const parsedReq = parseNodeFloorRequirement(nodeRequirement);
+  if (!parsedReq.ok) {
+    return {
+      ok: false,
+      code: "malformed-target",
+      message: `Target ${targetTag} has unsupported engines.node (${nodeRequirement}).`,
+    };
+  }
+
+  const upgradeActions = extractUpgradeActions(changelogText, targetVersion);
+  if (
+    upgradeActions.status === "missing-target" ||
+    upgradeActions.status === "missing-section"
+  ) {
+    return {
+      ok: false,
+      code: "malformed-target",
+      message: `Target ${targetTag} CHANGELOG.md is missing a ### Upgrade actions section for ${targetVersion}.`,
+    };
+  }
+
+  const metadata: ApplyTargetMetadata = {
+    targetTag,
+    targetVersion,
+    nodeRequirement,
+    upgradeActions,
+  };
+
+  const floorCheck = satisfiesNodeFloor(args.runningNode, nodeRequirement);
+  if (!floorCheck.ok) {
+    return {
+      ok: false,
+      code: "node-floor",
+      message: formatNodeFloorApplyRefusal({
+        tag: targetTag,
+        requirement: nodeRequirement,
+        running: args.runningNode,
+      }),
+      metadata,
+    };
+  }
+
+  return { ok: true, metadata };
+}
+
+/**
+ * Mutates the checkout after successful preflight. Caller has already passed
+ * `assessUpdateApply` and `preflightUpdateTarget`.
+ */
+export async function executeUpdateApply(args: {
+  root: string;
+  targetTag: string;
+  targetVersion: string;
   wasRunning: boolean;
   ops: ApplyOps;
 }): Promise<void> {
@@ -154,13 +312,6 @@ export async function executeUpdateApply(args: {
   ops.git(["update-ref", "refs/max/update-backup", head]);
 
   try {
-    ops.log(`Fetch ${targetTag}`);
-    const fetchArgs = ["fetch", "--no-tags", args.fetchUrl, `refs/tags/${targetTag}:refs/max/update-target`];
-    if (args.token) {
-      ops.git(["-c", `http.extraheader=AUTHORIZATION: bearer ${args.token}`, ...fetchArgs]);
-    } else {
-      ops.git(fetchArgs);
-    }
     ops.log(`Move pin to ${targetTag}`);
     ops.git(["reset", "--hard", "refs/max/update-target"]);
     ops.log("npm ci");

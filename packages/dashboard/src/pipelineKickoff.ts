@@ -181,7 +181,7 @@ export function assembleKickoffPayload(args: {
   loopMode?: ImplementFullyLoopMode;
 }): TriggerRunRequest {
   validateFeatureSlugIdea(args.feature, args.slug, args.idea);
-  const variables = buildKickoffVariables(
+  let variables = buildKickoffVariables(
     args.feature,
     args.slug,
     args.idea.trim(),
@@ -193,6 +193,12 @@ export function assembleKickoffPayload(args: {
     variables,
     args.introspection.requiredVariables
   );
+  if (args.roleProfileId) {
+    variables = {
+      ...variables,
+      roleModelProfileId: args.roleProfileId,
+    };
+  }
   const requiredRoles = args.introspection.roleContract.required;
   const base = resolveRoleModelProfileDefaults(
     args.roleProfileId,

@@ -64,10 +64,11 @@ the global automations YAML). Do **not** register it yourself.
 
 Exactly one of these forms:
 
-**Named backlog id (`b<n>`):**
+**Named backlog id (`b42`, `b-dm58`, …):**
 
 ```bash
-lca implement-fully --feature <bN> --dry-run
+lca implement-fully --feature b42 --dry-run
+# or: lca implement-fully --feature b-dm58 --dry-run
 ```
 
 **Free-form new work (no backlog id):**
@@ -129,7 +130,7 @@ Run one command with the same options as the dry run, omitting its dry-run
 option:
 
 ```bash
-lca implement-fully --feature <bN> [--profile <quick|deep|guided>] [--role-profile <id>]
+lca implement-fully --feature b42 [--profile <quick|deep|guided>] [--role-profile <id>]
 ```
 
 or

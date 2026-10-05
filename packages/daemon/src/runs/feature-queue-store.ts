@@ -1,10 +1,15 @@
 import {
+  classifyFeatureQueueOutcome,
+  featureQueueFailureDetail,
   readQueuePreviewFields,
   type FeatureQueueEntry,
+  type FeatureQueueEntryOrigin,
   type TriggerRunRequest,
 } from "@lca/shared";
 import { randomUUID } from "node:crypto";
 import type { LcaDatabase } from "../db/index.js";
+import { IMPLEMENT_FULLY_TERMINAL_CONFIG_KEY } from "../pipelines/implement-fully.js";
+import type { RunStore } from "./store.js";
 
 export type FeatureQueueEntryRow = {
   id: string;
@@ -21,6 +26,7 @@ export type FeatureQueueEntryRow = {
   settled_at: string | null;
   updated_at: string;
   batch_digest_at: string | null;
+  origin: string;
 };
 
 export type QueueBatchDigestFacts = {
@@ -69,12 +75,15 @@ export function toFeatureQueueEntry(row: FeatureQueueEntryRow): FeatureQueueEntr
   } catch {
     after = [];
   }
+  const origin: FeatureQueueEntryOrigin =
+    row.origin === "direct" ? "direct" : "queue";
   return {
     id: row.id,
     workspaceId: row.workspace_id,
     featureId: row.feature_id,
     position: row.position,
     after,
+    origin,
     state: row.state as FeatureQueueEntry["state"],
     runId: row.run_id,
     detail: row.detail,
@@ -91,7 +100,10 @@ export function parseFeatureQueueKickoff(row: FeatureQueueEntryRow): TriggerRunR
 }
 
 export class FeatureQueueStore {
-  constructor(private readonly db: LcaDatabase) {}
+  constructor(
+    private readonly db: LcaDatabase,
+    private readonly runStore?: RunStore
+  ) {}
 
   enqueue(input: {
     workspaceId: string;
@@ -118,21 +130,10 @@ export class FeatureQueueStore {
       }
 
       for (const depId of input.after) {
-        const hasRow = this.db
-          .prepare(
-            `SELECT id FROM feature_queue_entries
-             WHERE workspace_id = ? AND feature_id = ?
-             LIMIT 1`
-          )
-          .get(input.workspaceId, depId) as { id: string } | undefined;
-        const hasDone = this.db
-          .prepare(
-            `SELECT id FROM feature_queue_entries
-             WHERE workspace_id = ? AND feature_id = ? AND state = 'done'
-             LIMIT 1`
-          )
-          .get(input.workspaceId, depId) as { id: string } | undefined;
-        if (!hasRow && !hasDone) {
+        if (!this.hasDependencyRow(input.workspaceId, depId)) {
+          this.tryAdoptDirectRoot(input.workspaceId, depId);
+        }
+        if (!this.hasDependencyRow(input.workspaceId, depId)) {
           throw new FeatureQueueError(
             "unknown-dependency",
             `unknown dependency feature id: ${depId}`
@@ -242,6 +243,78 @@ export class FeatureQueueStore {
          LIMIT 1`
       )
       .get(workspaceId) as FeatureQueueEntryRow | undefined;
+  }
+
+  listRunningEntries(workspaceId: string): FeatureQueueEntryRow[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM feature_queue_entries
+         WHERE workspace_id = ? AND state = 'running'
+         ORDER BY position ASC`
+      )
+      .all(workspaceId) as FeatureQueueEntryRow[];
+  }
+
+  hasActiveFeatureRow(workspaceId: string, featureId: string): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT id FROM feature_queue_entries
+         WHERE workspace_id = ? AND feature_id = ?
+           AND state IN (${ACTIVE_DUPLICATE_STATES.map(() => "?").join(", ")})
+         LIMIT 1`
+      )
+      .get(workspaceId, featureId, ...ACTIVE_DUPLICATE_STATES) as
+      | { id: string }
+      | undefined;
+    return row != null;
+  }
+
+  recordDirectKickoff(input: {
+    workspaceId: string;
+    featureId: string;
+    runId: string;
+    kickoff: TriggerRunRequest;
+  }): "recorded" | "skipped-active" | "skipped-duplicate-run" {
+    const apply = this.db.transaction((): "recorded" | "skipped-active" | "skipped-duplicate-run" => {
+      if (this.hasActiveFeatureRow(input.workspaceId, input.featureId)) {
+        return "skipped-active";
+      }
+      const existingRun = this.db
+        .prepare(`SELECT id FROM feature_queue_entries WHERE run_id = ? LIMIT 1`)
+        .get(input.runId) as { id: string } | undefined;
+      if (existingRun) {
+        return "skipped-duplicate-run";
+      }
+
+      const positionRow = this.db
+        .prepare(
+          `SELECT COALESCE(MAX(position), 0) AS n
+           FROM feature_queue_entries
+           WHERE workspace_id = ?`
+        )
+        .get(input.workspaceId) as { n: number };
+      const position = positionRow.n + 1;
+      const id = randomUUID();
+
+      this.db
+        .prepare(
+          `INSERT INTO feature_queue_entries (
+             id, workspace_id, feature_id, position,
+             after_json, kickoff_json, state, run_id,
+             started_at, batch_digest_at, origin
+           ) VALUES (?, ?, ?, ?, '[]', ?, 'running', ?, datetime('now'), datetime('now'), 'direct')`
+        )
+        .run(
+          id,
+          input.workspaceId,
+          input.featureId,
+          position,
+          JSON.stringify(input.kickoff),
+          input.runId
+        );
+      return "recorded";
+    });
+    return apply();
   }
 
   listQueuedEntries(workspaceId: string): FeatureQueueEntryRow[] {
@@ -375,6 +448,7 @@ export class FeatureQueueStore {
         `SELECT feature_id, state FROM feature_queue_entries
          WHERE workspace_id = ?
            AND batch_digest_at IS NULL
+           AND origin = 'queue'
            AND state IN ('done', 'failed', 'blocked')`
       )
       .all(workspaceId) as Array<{ feature_id: string; state: string }>;
@@ -417,7 +491,8 @@ export class FeatureQueueStore {
            batch_digest_at = datetime('now'),
            updated_at = datetime('now')
          WHERE workspace_id = ?
-           AND batch_digest_at IS NULL`
+           AND batch_digest_at IS NULL
+           AND origin = 'queue'`
       )
       .run(workspaceId);
   }
@@ -489,5 +564,100 @@ export class FeatureQueueStore {
     });
     apply();
     return requeued;
+  }
+
+  private hasDependencyRow(workspaceId: string, featureId: string): boolean {
+    const hasRow = this.db
+      .prepare(
+        `SELECT id FROM feature_queue_entries
+         WHERE workspace_id = ? AND feature_id = ?
+         LIMIT 1`
+      )
+      .get(workspaceId, featureId) as { id: string } | undefined;
+    const hasDone = this.db
+      .prepare(
+        `SELECT id FROM feature_queue_entries
+         WHERE workspace_id = ? AND feature_id = ? AND state = 'done'
+         LIMIT 1`
+      )
+      .get(workspaceId, featureId) as { id: string } | undefined;
+    return hasRow != null || hasDone != null;
+  }
+
+  private tryAdoptDirectRoot(workspaceId: string, featureId: string): void {
+    if (!this.runStore) {
+      return;
+    }
+    const root = this.runStore.findLatestImplementFullyRootByFeature(
+      workspaceId,
+      featureId
+    );
+    if (!root) {
+      return;
+    }
+    const kickoff = this.runStore.triggerRunRequestFromRootRun(root);
+    if (!kickoff) {
+      return;
+    }
+    if (this.hasActiveFeatureRow(workspaceId, featureId)) {
+      return;
+    }
+    const existingRun = this.db
+      .prepare(`SELECT id FROM feature_queue_entries WHERE run_id = ? LIMIT 1`)
+      .get(root.id) as { id: string } | undefined;
+    if (existingRun) {
+      return;
+    }
+
+    const lineage = this.runStore.listChainLineageRuns(root.id);
+    const outcome = classifyFeatureQueueOutcome(
+      lineage,
+      IMPLEMENT_FULLY_TERMINAL_CONFIG_KEY
+    );
+    const state =
+      outcome === "done" ? "done" : outcome === "failed" ? "failed" : "running";
+    const detail =
+      outcome === "failed"
+        ? featureQueueFailureDetail(lineage, IMPLEMENT_FULLY_TERMINAL_CONFIG_KEY)
+        : null;
+
+    const positionRow = this.db
+      .prepare(
+        `SELECT COALESCE(MAX(position), 0) AS n
+         FROM feature_queue_entries
+         WHERE workspace_id = ?`
+      )
+      .get(workspaceId) as { n: number };
+    const position = positionRow.n + 1;
+    const id = randomUUID();
+
+    this.db
+      .prepare(
+        `INSERT INTO feature_queue_entries (
+           id, workspace_id, feature_id, position,
+           after_json, kickoff_json, state, run_id, detail,
+           started_at, settled_at, batch_digest_at, origin
+         ) VALUES (
+           ?, ?, ?, ?, '[]', ?, ?, ?, ?,
+           CASE WHEN ? = 'running' THEN COALESCE(?, datetime('now')) ELSE ? END,
+           CASE WHEN ? IN ('done', 'failed') THEN COALESCE(?, datetime('now')) ELSE NULL END,
+           datetime('now'), 'direct'
+         )`
+      )
+      .run(
+        id,
+        workspaceId,
+        featureId,
+        position,
+        JSON.stringify(kickoff),
+        state,
+        root.id,
+        detail,
+        state,
+        root.started_at,
+        root.started_at,
+        state,
+        root.ended_at
+      );
   }
 }

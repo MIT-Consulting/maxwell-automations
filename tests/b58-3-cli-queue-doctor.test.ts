@@ -38,6 +38,7 @@ import { IMPLEMENT_FULLY_ENTRY_WORKER_KEY } from "../packages/daemon/src/pipelin
 import { FeatureQueueStore } from "../packages/daemon/src/runs/feature-queue-store.ts";
 import { RunEngine } from "../packages/daemon/src/runs/engine.ts";
 import { TriggerManager } from "../packages/daemon/src/triggers/manager.ts";
+import { emptyFeatureIndex } from "./helpers/empty-tracker.ts";
 import { freeListenPort } from "./helpers/free-port.ts";
 
 afterEach(() => {
@@ -93,7 +94,7 @@ function writeRoadmapIndex(workspacePath: string): void {
   );
   const featureDir = join(workspacePath, "docs", "roadmap", DOCUMENTED_SLUG);
   mkdirSync(featureDir, { recursive: true });
-  writeFileSync(join(featureDir, "00-index.md"), "# b42\n", "utf8");
+  writeFileSync(join(featureDir, "00-index.md"), emptyFeatureIndex("b42"), "utf8");
   writeFileSync(join(featureDir, "prd.md"), "# prd\n", "utf8");
 }
 
@@ -179,6 +180,7 @@ function entry(
     featureId: "b1",
     position: 1,
     after: [],
+    origin: "queue",
     state: "queued",
     runId: null,
     detail: null,
@@ -474,11 +476,44 @@ describe("b58.3 doctor feature queue formatters", () => {
     expect(summary.running).toEqual({
       featureId: "b2",
       runId: "run-12345678",
+      origin: "queue",
+      count: 1,
     });
     expect(summary.nextEligibleFeatureId).toBe("b3");
     const lines = formatFeatureQueueLines(summary);
     expect(lines.some((l) => l.includes("running: b2"))).toBe(true);
     expect(lines.some((l) => l.includes("next: b3"))).toBe(true);
+  });
+
+  it("marks direct origin and multiple running rows", () => {
+    const entries: FeatureQueueEntry[] = [
+      entry({
+        id: "d1",
+        featureId: "b85",
+        state: "running",
+        origin: "direct",
+        runId: "run-direct1",
+        position: 1,
+      }),
+      entry({
+        id: "d2",
+        featureId: "b86",
+        state: "running",
+        origin: "direct",
+        runId: "run-direct2",
+        position: 2,
+      }),
+    ];
+    const summary = summarizeFeatureQueue(entries);
+    expect(summary.running).toEqual({
+      featureId: "b85",
+      runId: "run-direct1",
+      origin: "direct",
+      count: 2,
+    });
+    const lines = formatFeatureQueueLines(summary);
+    expect(lines.some((l) => l.includes("[direct]"))).toBe(true);
+    expect(lines.some((l) => l.includes("+1 more running"))).toBe(true);
   });
 
   it("failed and blocked entries include detail", () => {

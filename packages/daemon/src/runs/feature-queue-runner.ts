@@ -184,25 +184,30 @@ export class FeatureQueueRunner {
     if (this.hasPipelineBlocker(workspaceId)) {
       return;
     }
-    const running = this.queueStore.getRunningEntry(workspaceId);
-    if (!running?.run_id) {
-      return;
-    }
-    const lineage = this.store.listChainLineageRuns(running.run_id);
-    const outcome = classifyFeatureQueueOutcome(
-      lineage,
-      IMPLEMENT_FULLY_TERMINAL_CONFIG_KEY
-    );
-    if (outcome === "running") {
-      return;
-    }
-    const detail =
-      outcome === "failed"
-        ? featureQueueFailureDetail(lineage, IMPLEMENT_FULLY_TERMINAL_CONFIG_KEY)
-        : null;
-    const settled = this.queueStore.settleEntry(running.id, outcome, detail);
-    if (settled && outcome === "failed") {
-      this.queueStore.parkDependents(running.feature_id, workspaceId);
+    const runningRows = this.queueStore.listRunningEntries(workspaceId);
+    for (const running of runningRows) {
+      if (!running.run_id) {
+        continue;
+      }
+      const lineage = this.store.listChainLineageRuns(running.run_id);
+      const outcome = classifyFeatureQueueOutcome(
+        lineage,
+        IMPLEMENT_FULLY_TERMINAL_CONFIG_KEY
+      );
+      if (outcome === "running") {
+        continue;
+      }
+      const detail =
+        outcome === "failed"
+          ? featureQueueFailureDetail(
+              lineage,
+              IMPLEMENT_FULLY_TERMINAL_CONFIG_KEY
+            )
+          : null;
+      const settled = this.queueStore.settleEntry(running.id, outcome, detail);
+      if (settled && outcome === "failed") {
+        this.queueStore.parkDependents(running.feature_id, workspaceId);
+      }
     }
   }
 

@@ -41,17 +41,29 @@ already surfaces it.
 | Operator says… | First call |
 |----------------|------------|
 | latest / most recent failure, error, halt; "that failed run" | `lca doctor` → pick short id under **Recent failures** / **halted** → `lca doctor <id>` |
-| what's running / stuck / needs input | `lca doctor` (**Pipelines**) + `/lca-dev runs` |
+| what's running / stuck / needs input (implement-fully) | `max watch b42 --until needs_input,halted,blocked,green --json` then `lca doctor <id>` |
+| supervise an unattended pipeline | `max watch b42 --json` — preserve `rootRunId` and `cursor`; done when `outcome: green` |
 | daemon up? remote? counts? | `lca status` |
 | which automations / recent run states | `lca list` |
 | board-shaped recent rows | `/lca-dev runs` (`-Status failed` when filtering) |
 
-Bare `lca doctor` prints daemon health, active/halted pipelines, and recent
-failures with 8-char ids — enough to resolve a vague reference in one round trip.
-Escalate only after that: `lca escalate <id> retry|skip|abort`. When the halt is a
+Bare `lca doctor` prints daemon health, a **Roadmaps** line per workspace,
+active/halted pipelines, and recent failures with 8-char ids — enough to resolve
+a vague reference in one round trip. For pasteable support evidence use
+`max doctor --report` (redacted bundle). For additive index repairs use
+`max roadmap fix` (diff + confirm; `--yes` in non-TTY).
+For implement-fully pipelines, prefer the daemon snapshot via `max watch` /
+`max doctor --feature b42` over `/lca-dev runs` alone. Forward-only steering:
+`max directive` (later steps), running role swap: `max escalate --feature b-dm58 --role …`,
+stop after step: `max pipeline-stop` (not `max stop`). Directives do not reach the
+active step — use `max message` / `max interrupt`. Set `LCA_ACTOR` for attribution.
+
+Escalate halts after doctor: `lca escalate <id> retry|skip|abort`. When the halt is a
 rejected model (fast `sdk_error`, no activity, a model/parameter message), retry with
-`--role <role>=<model>[?k=v&k2=v2]` instead of a fresh kickoff. Deeper layout:
-[`docs/troubleshooting.md`](../../docs/troubleshooting.md).
+`--role <role>=<model>[?k=v&k2=v2]` instead of a fresh kickoff. Wave-track stop refusal:
+`lca wave <id> retry|abort`. Deeper layout:
+[`docs/troubleshooting.md`](../../docs/troubleshooting.md) and
+[`docs/configuration.md`](../../docs/configuration.md) § Pipeline snapshot, watch, and steering.
 
 **Queue `--after`:** deps must already be **queue rows** (or prior `done`
 entries) — a live `lca implement-fully` feature is not a dependency. For a true
@@ -74,7 +86,7 @@ When the user asks for `help` (or "list lca-dev commands"), render this table:
 | `/lca-dev down`, "stop the daemon", "tear down lca" | **down** | Cancel active runs, then graceful shutdown (verified hard-kill fallback). |
 | `/lca-dev status`, "lca status" | **status** | Daemon health, port owner, and automation/run/workspace counts. |
 | `/lca-dev doctor`, "lca doctor", "diagnose run", "what failed", "latest failure", "halted pipeline" | **doctor** | Health triage (no arg) or run diagnosis; first call for vague failure references. |
-| `/lca-dev runs`, "recent runs", "runs by status", "what's running" | **runs** | List recent runs grouped by status with automation name + timing. |
+| `/lca-dev runs`, "recent runs", "runs by status" | **runs** | Board-shaped recent rows. For implement-fully "what's running", use Orientation → `max watch` / `lca doctor`. |
 | `/lca-dev reset`, "start fresh", "clean slate" | **reset** | Stop → wipe runtime DB → restart. `-Purge` also deletes workspace YAML. |
 | `/lca-dev prune`, "prune workspaces" | **prune** | Remove orphan workspaces whose directory no longer exists on disk. |
 | `/lca-dev help` | **help** | Show this table. |
@@ -210,6 +222,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .cursor/skills/lca-dev/scrip
 Lists the most recent runs grouped by status (active statuses first), resolving each run's
 automation name from `/api/automations` and showing trigger kind, elapsed time, and start
 time. Read-only. Where `status` only gives counts, `runs` shows the individual rows.
+For implement-fully pipeline state and recovery, prefer `max watch` / `lca doctor`
+(see Orientation) — do not treat `runs` as the pipeline supervisor.
 
 **Agent fallback**: `GET /api/runs?limit=<n>` + `/api/automations`, join names, group by status.
 

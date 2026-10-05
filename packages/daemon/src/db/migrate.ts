@@ -39,6 +39,9 @@ import {
   MIGRATION_V19_FEATURE_QUEUE_SQL,
   MIGRATION_V20_FEATURE_QUEUE_DIGEST_SQL,
   MIGRATION_V21_CHAT_ATTACHED_RUN_SQL,
+  MIGRATION_V22_FEATURE_QUEUE_ORIGIN_SQL,
+  MIGRATION_V23_CHAIN_ROOT_INDEX_SQL,
+  MIGRATION_V24_PIPELINE_DIRECTIVES_SQL,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -392,6 +395,39 @@ export function migrate(db: Database.Database): void {
       db.exec(MIGRATION_V21_CHAT_ATTACHED_RUN_SQL);
     }
     applyVersion(db, 21);
+    version = 21;
+  }
+
+  if (version < 22) {
+    const hasFeatureQueueColumn = (name: string): boolean => {
+      const cols = db
+        .prepare("PRAGMA table_info(feature_queue_entries)")
+        .all() as Array<{ name: string }>;
+      return cols.some((c) => c.name === name);
+    };
+    if (!hasFeatureQueueColumn("origin")) {
+      db.exec(MIGRATION_V22_FEATURE_QUEUE_ORIGIN_SQL);
+    }
+    applyVersion(db, 22);
+    version = 22;
+  }
+
+  if (version < 23) {
+    db.exec(MIGRATION_V23_CHAIN_ROOT_INDEX_SQL);
+    applyVersion(db, 23);
+    version = 23;
+  }
+
+  if (version < 24) {
+    const table = db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'pipeline_directives'"
+      )
+      .get() as { name: string } | undefined;
+    if (!table) {
+      db.exec(MIGRATION_V24_PIPELINE_DIRECTIVES_SQL);
+    }
+    applyVersion(db, 24);
   }
 
   if (currentVersion(db) < SCHEMA_VERSION) {

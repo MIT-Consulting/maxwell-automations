@@ -36,6 +36,7 @@
     "verify:b6:ui": "node scripts/verify-b6-ui.mjs",
     "verify:b6": "npm run build && npm test && npm run verify:b6:ui",
     "verify:b30:ui": "node scripts/verify-b30-ui.mjs",
+    "verify:b78:ui": "node scripts/verify-b78-ui.mjs",
     "verify:b30": "npm run build && npm test && npm run verify:b30:ui",
     "verify:b31:ui": "node scripts/verify-b31-ui.mjs",
     "verify:b31": "npm run build && npm test && npm run verify:b31:ui",
@@ -64,6 +65,7 @@
     "cleanup:runs": "node scripts/cleanup-stale-runs.mjs",
     "install:skill": "node scripts/install-skill.mjs",
     "export:public": "node scripts/export-public.mjs",
+    "release:preflight": "node scripts/release-preflight.mjs",
     "smoke": "node scripts/smoke-test.mjs"
   },
   "devDependencies": {

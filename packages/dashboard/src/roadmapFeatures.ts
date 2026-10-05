@@ -4,28 +4,36 @@
  * in the kickoff wizard; never treated as a source of truth for status.
  */
 
-export type RoadmapFeatureSection = "backlog" | "completed" | "ideas" | "other";
+import {
+  epicRefusalMessage,
+  parseRoadmapIndex,
+  pickCanonicalEntry,
+  type RoadmapIndexSection,
+  type RoadmapReadinessReport,
+} from "@lca/shared";
+import { formatReadinessFindingLine } from "./roadmapReadinessUi";
+
+export type RoadmapFeatureSection = "backlog" | "completed" | "ideas";
 
 export type RoadmapFeatureSummary = {
   id: string;
   title: string;
   /** Index section — Backlog order is the priority order. */
   section: RoadmapFeatureSection;
+  /** False for epic parent briefs (visible but not kickoff-selectable). */
+  selectable: boolean;
+  disabledReason?: string;
 };
 
-// Backlog bullets: `- **b17** Title text — description...`
-const BACKLOG_BULLET_RE = /^-\s+\*\*(b\d+)\*\*\s+(.+?)\s+—/;
-// Completed / Documented Ideas table rows: `| b50 | Title | ... |`
-const TABLE_ROW_RE = /^\|\s*(b\d+)\s*\|\s*([^|]+?)\s*\|/;
-const SECTION_HEADER_RE =
-  /^##\s+(Backlog|Completed|Documented Ideas)(?:\s+.+)?\s*$/i;
-
-function sectionFromHeader(name: string): RoadmapFeatureSection {
-  const key = name.trim().toLowerCase();
-  if (key === "backlog") return "backlog";
-  if (key === "completed") return "completed";
-  if (key === "documented ideas") return "ideas";
-  return "other";
+function sectionFromIndex(section: RoadmapIndexSection): RoadmapFeatureSection {
+  switch (section) {
+    case "backlog":
+      return "backlog";
+    case "documented-ideas":
+      return "ideas";
+    case "completed":
+      return "completed";
+  }
 }
 
 function sectionRank(section: RoadmapFeatureSection): number {
@@ -34,38 +42,44 @@ function sectionRank(section: RoadmapFeatureSection): number {
       return 0;
     case "ideas":
       return 1;
-    case "other":
-      return 2;
     case "completed":
-      return 3;
+      return 2;
   }
 }
 
-/** Parse `{id, title, section}` pairs from Backlog bullets and
- *  Completed/Documented Ideas table rows. Tolerant of missing sections or an
- *  unexpected format — returns whatever it can match, never throws. First
- *  occurrence wins (Backlog before Completed/Ideas in the index). */
+/**
+ * Parse `{id, title, section, selectable}` from canonical resolver sections.
+ * Throws on malformed format declarations (same as the daemon resolver).
+ */
 export function parseRoadmapFeatures(markdown: string): RoadmapFeatureSummary[] {
+  const parsed = parseRoadmapIndex(markdown);
   const seen = new Set<string>();
   const out: RoadmapFeatureSummary[] = [];
-  let section: RoadmapFeatureSection = "other";
 
-  for (const rawLine of markdown.split("\n")) {
-    const line = rawLine.trim();
-    const header = SECTION_HEADER_RE.exec(line);
-    if (header?.[1]) {
-      section = sectionFromHeader(header[1]);
-      continue;
-    }
-
-    const match = BACKLOG_BULLET_RE.exec(line) ?? TABLE_ROW_RE.exec(line);
-    if (!match) continue;
-    const id = match[1];
-    const title = match[2]?.trim();
-    if (!id || !title || seen.has(id)) continue;
-    seen.add(id);
-    out.push({ id, title, section });
+  for (const entry of parsed.entries) {
+    if (seen.has(entry.featureId)) continue;
+    seen.add(entry.featureId);
+    const canonical = pickCanonicalEntry(parsed.entries, entry.featureId);
+    out.push({
+      id: canonical.featureId,
+      title: canonical.title,
+      section: sectionFromIndex(canonical.section),
+      selectable: true,
+    });
   }
+
+  for (const epic of parsed.epics) {
+    if (seen.has(epic.epicId)) continue;
+    seen.add(epic.epicId);
+    out.push({
+      id: epic.epicId,
+      title: epic.title,
+      section: "backlog",
+      selectable: false,
+      disabledReason: epicRefusalMessage(epic.epicId),
+    });
+  }
+
   return out;
 }
 
@@ -87,9 +101,62 @@ export function filterRoadmapFeatures(
           f.id.toLowerCase().includes(q) || f.title.toLowerCase().includes(q)
       );
 
-  // Stable sort: backlog → ideas → other → completed; file order within.
   return matched
     .slice()
     .sort((a, b) => sectionRank(a.section) - sectionRank(b.section))
     .slice(0, limit);
+}
+
+/**
+ * Add or mark disabled picker rows from readiness findings (ignored sections,
+ * format violations) without a second parser.
+ */
+export function mergeReadinessDisabledFeatures(
+  features: RoadmapFeatureSummary[],
+  report: RoadmapReadinessReport | undefined
+): RoadmapFeatureSummary[] {
+  if (!report) return features;
+
+  const disabledById = new Map<string, string>();
+  for (const finding of report.findings) {
+    if (
+      finding.code !== "ignored-section-ids" &&
+      finding.code !== "format-violation"
+    ) {
+      continue;
+    }
+    const reason = formatReadinessFindingLine(finding);
+    for (const id of finding.featureIds ?? []) {
+      disabledById.set(id, reason);
+    }
+  }
+
+  if (disabledById.size === 0) return features;
+
+  const out = features.map((feature) => {
+    const reason = disabledById.get(feature.id);
+    if (!reason) return feature;
+    if (feature.section === "completed" && feature.selectable) {
+      disabledById.delete(feature.id);
+      return feature;
+    }
+    return {
+      ...feature,
+      selectable: false,
+      disabledReason: reason,
+    };
+  });
+
+  for (const [id, reason] of disabledById) {
+    if (out.some((feature) => feature.id === id)) continue;
+    out.push({
+      id,
+      title: id,
+      section: "backlog",
+      selectable: false,
+      disabledReason: reason,
+    });
+  }
+
+  return out;
 }

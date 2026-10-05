@@ -67,14 +67,15 @@ afterEach(() => {
 });
 
 describe("DEFAULT_NOTIFY_EVENT_PREFS and mergeNotifyEventPrefs", () => {
-  it("matches the smart-defaults table for all thirteen ids", () => {
-    expect(ALERT_NOTIFY_EVENTS).toHaveLength(13);
+  it("matches the smart-defaults table for all fourteen ids", () => {
+    expect(ALERT_NOTIFY_EVENTS).toHaveLength(14);
     const expected: ResolvedNotifyEventPrefs = {
       needs_input: { toast: true, ntfy: true },
       run_failed: { toast: true, ntfy: true },
       auth_expired: { toast: true, ntfy: true },
       run_completed: { toast: false, ntfy: false },
       pipeline_complete: { toast: true, ntfy: true },
+      pipeline_blocked: { toast: true, ntfy: true },
       queue_batch_complete: { toast: true, ntfy: true },
       plan_approval_required: { toast: true, ntfy: true },
       ux_approval_required: { toast: true, ntfy: true },

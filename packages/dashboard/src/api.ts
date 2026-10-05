@@ -55,6 +55,8 @@ import {
   type UpdateSnapshot,
   type WorkspaceFileContentResponse,
   type WorkspaceMutationResponse,
+  type GetRoadmapReadinessSummariesResponse,
+  type GetWorkspaceRoadmapReadinessResponse,
 } from "@lca/shared";
 import { resolveAttachmentMimeType } from "./chatAttachments";
 
@@ -271,6 +273,22 @@ export const api = {
     return jsonOrThrow<WorkspaceFileContentResponse>(
       await request(
         `/api/workspaces/${encodeURIComponent(workspaceId)}/files/content?path=${encodeURIComponent(path)}`
+      )
+    );
+  },
+
+  async getRoadmapReadinessSummaries(): Promise<GetRoadmapReadinessSummariesResponse> {
+    return jsonOrThrow<GetRoadmapReadinessSummariesResponse>(
+      await request("/api/roadmap-readiness")
+    );
+  },
+
+  async getWorkspaceRoadmapReadiness(
+    workspaceId: string
+  ): Promise<GetWorkspaceRoadmapReadinessResponse> {
+    return jsonOrThrow<GetWorkspaceRoadmapReadinessResponse>(
+      await request(
+        `/api/workspaces/${encodeURIComponent(workspaceId)}/roadmap-readiness`
       )
     );
   },

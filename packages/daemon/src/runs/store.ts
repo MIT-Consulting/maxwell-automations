@@ -3,14 +3,21 @@ import type {
   ChainControlRequest,
   ChainControlResponse,
   ChainRunContext,
+  InputRequestStatus,
   ModelSelection,
+  PipelineDirectiveBody,
+  PipelineDirectiveKind,
   RunEscalationAction,
   RunEscalationRefusal,
   RunStatus,
+  TriggerRunRequest,
 } from "@lca/shared";
 import {
   CHAIN_MAX_DEPTH_MAX,
   GENERATED_CONFIG_KEY_PREFIX,
+  IMPLEMENT_FULLY_PIPELINE_ID,
+  PIPELINE_DIRECTIVE_KIND_SET,
+  PIPELINE_DIRECTIVE_MAX_COUNT,
   chainRunContextSchema,
   modelSelectionFromLegacy,
   normalizeModelSelection,
@@ -20,7 +27,10 @@ import type { LcaDatabase } from "../db/index.js";
 import type { DaemonEventSink } from "../events.js";
 import { DEFAULT_SETTINGS } from "../config/settings.js";
 import { capEventPayload } from "../events/payload-cap.js";
-import { splitSelectionForDb } from "../models/selection-persist.js";
+import {
+  selectionFromStored,
+  splitSelectionForDb,
+} from "../models/selection-persist.js";
 import {
   HALT_DISCOVERY_TRIGGER_KIND,
   HALT_DISCOVERY_WORKER_KEY,
@@ -145,6 +155,23 @@ export type QueuedRunMessageRow = {
   created_at: string;
   delivered_at: string | null;
   cancelled_at: string | null;
+};
+
+export type LineageLifecycleEventRow = {
+  id: number;
+  run_id: string;
+  event_type: string;
+  payload: string;
+  created_at: string;
+};
+
+export type LineagePendingInputRequestRow = {
+  id: string;
+  run_id: string;
+  question: string;
+  status: InputRequestStatus;
+  created_at: string;
+  metadata_json: string | null;
 };
 
 export class RunStore {
@@ -1170,14 +1197,139 @@ export class RunStore {
     }));
   }
 
+  /**
+   * Newest implement-fully root in a workspace for a feature id (chain context
+   * JSON1 lookup). Returns null when no matching root exists.
+   */
+  findLatestImplementFullyRootByFeature(
+    workspaceId: string,
+    featureId: string
+  ): RunRow | undefined {
+    return this.db
+      .prepare(
+        `SELECT * FROM runs
+         WHERE workspace_id = ?
+           AND (chain_root_run_id IS NULL OR chain_root_run_id = id)
+           AND json_extract(chain_context_json, '$.variables.pipelineId') = ?
+           AND json_extract(chain_context_json, '$.variables.featureId') = ?
+         ORDER BY created_at DESC
+         LIMIT 1`
+      )
+      .get(workspaceId, IMPLEMENT_FULLY_PIPELINE_ID, featureId) as
+      | RunRow
+      | undefined;
+  }
+
+  /** Full run rows for a root and every chained descendant, oldest first. */
+  listChainLineageRunRows(rootRunId: string): RunRow[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM runs
+         WHERE id = ? OR chain_root_run_id = ?
+         ORDER BY created_at ASC`
+      )
+      .all(rootRunId, rootRunId) as RunRow[];
+  }
+
+  /** Pending input requests across every run in a pipeline lineage. */
+  listPendingInputRequestsForLineage(
+    rootRunId: string
+  ): LineagePendingInputRequestRow[] {
+    return this.db
+      .prepare(
+        `SELECT ir.id, ir.run_id, ir.question, ir.status, ir.created_at,
+                ir.metadata_json
+         FROM input_requests ir
+         INNER JOIN runs r ON r.id = ir.run_id
+         WHERE (r.id = ? OR r.chain_root_run_id = ?)
+           AND ir.status = 'pending'
+         ORDER BY ir.created_at ASC`
+      )
+      .all(rootRunId, rootRunId) as LineagePendingInputRequestRow[];
+  }
+
+  /**
+   * Curated lifecycle events for a lineage, ordered by global event id.
+   * Returns empty when `lifecycleKinds` is empty.
+   * When `since` is set, returns rows with exclusive `id > since` up to `limit`.
+   */
+  listLifecycleEventsForLineage(
+    rootRunId: string,
+    lifecycleKinds: readonly string[],
+    options?: { since?: number; limit?: number }
+  ): LineageLifecycleEventRow[] {
+    if (lifecycleKinds.length === 0) {
+      return [];
+    }
+    const since = options?.since ?? 0;
+    const limit = options?.limit ?? 500;
+    const placeholders = lifecycleKinds.map(() => "?").join(", ");
+    return this.db
+      .prepare(
+        `SELECT e.id, e.run_id, e.event_type, e.payload, e.created_at
+         FROM run_events e
+         INNER JOIN runs r ON r.id = e.run_id
+         WHERE (r.id = ? OR r.chain_root_run_id = ?)
+           AND e.id > ?
+           AND e.event_type IN (${placeholders})
+         ORDER BY e.id ASC
+         LIMIT ?`
+      )
+      .all(
+        rootRunId,
+        rootRunId,
+        since,
+        ...lifecycleKinds,
+        limit
+      ) as LineageLifecycleEventRow[];
+  }
+
+  /** Highest persisted `run_events.id`, or 0 when the table is empty. */
+  getMaxGlobalEventId(): number {
+    const row = this.db
+      .prepare(`SELECT COALESCE(MAX(id), 0) AS max_id FROM run_events`)
+      .get() as { max_id: number };
+    return row.max_id;
+  }
+
+  /** Build a queue kickoff payload from a persisted implement-fully root run. */
+  triggerRunRequestFromRootRun(row: RunRow): TriggerRunRequest | null {
+    const parsed = this.parseChainContext(row);
+    if (parsed?.ok !== true) {
+      return null;
+    }
+    const kickoff: TriggerRunRequest = {
+      automationId: row.automation_id,
+      variables: parsed.context.variables,
+      roleModels: parsed.context.roleModels,
+    };
+    if (row.chain_max_depth != null) {
+      kickoff.maxDepth = row.chain_max_depth;
+    }
+    const modelSelection = selectionFromStored(row.model, row.model_params_json);
+    if (modelSelection) {
+      kickoff.modelSelection = modelSelection;
+    } else if (row.model) {
+      kickoff.model = row.model;
+    }
+    return kickoff;
+  }
+
   /** Root run plus every run chained from it, with automation config keys. */
   listChainLineageRuns(rootRunId: string): Array<{
     status: string;
     configKey: string;
+    chainStopRequestedAt: string | null;
+    chainStopReason: string | null;
+    createdAt: string;
   }> {
     return this.db
       .prepare(
-        `SELECT r.status, a.config_key AS configKey
+        `SELECT r.status,
+                a.config_key AS configKey,
+                r.chain_stop_requested_at AS chainStopRequestedAt,
+                r.chain_stop_reason AS chainStopReason,
+                r.created_at AS createdAt
          FROM runs r
          JOIN automations a ON a.id = r.automation_id
          WHERE r.id = ? OR r.chain_root_run_id = ?
@@ -1186,6 +1338,9 @@ export class RunStore {
       .all(rootRunId, rootRunId) as Array<{
       status: string;
       configKey: string;
+      chainStopRequestedAt: string | null;
+      chainStopReason: string | null;
+      createdAt: string;
     }>;
   }
 
@@ -1315,5 +1470,128 @@ export class RunStore {
          ORDER BY created_at ASC, rowid ASC`
       )
       .all(runId) as QueuedRunMessageRow[];
+  }
+
+  /** True when the row is an implement-fully pipeline root. */
+  isImplementFullyRootRun(row: RunRow): boolean {
+    if (row.chain_root_run_id != null && row.chain_root_run_id !== row.id) {
+      return false;
+    }
+    const parsed = this.parseChainContext(row);
+    if (parsed?.ok !== true) {
+      return false;
+    }
+    return parsed.context.variables.pipelineId === IMPLEMENT_FULLY_PIPELINE_ID;
+  }
+
+  listPipelineDirectives(rootRunId: string): Array<{
+    id: string;
+    rootRunId: string;
+    kind: PipelineDirectiveKind;
+    actorId: string | null;
+    body: PipelineDirectiveBody;
+    createdAt: string;
+  }> {
+    const rows = this.db
+      .prepare(
+        `SELECT id, root_run_id, kind, actor_id, body_json, created_at
+         FROM pipeline_directives
+         WHERE root_run_id = ?
+         ORDER BY created_at ASC, rowid ASC`
+      )
+      .all(rootRunId) as Array<{
+      id: string;
+      root_run_id: string;
+      kind: string;
+      actor_id: string | null;
+      body_json: string;
+      created_at: string;
+    }>;
+
+    const out: Array<{
+      id: string;
+      rootRunId: string;
+      kind: PipelineDirectiveKind;
+      actorId: string | null;
+      body: PipelineDirectiveBody;
+      createdAt: string;
+    }> = [];
+
+    for (const row of rows) {
+      if (!PIPELINE_DIRECTIVE_KIND_SET.has(row.kind)) {
+        continue;
+      }
+      let body: PipelineDirectiveBody;
+      try {
+        body = JSON.parse(row.body_json) as PipelineDirectiveBody;
+      } catch {
+        continue;
+      }
+      out.push({
+        id: row.id,
+        rootRunId: row.root_run_id,
+        kind: row.kind as PipelineDirectiveKind,
+        actorId: row.actor_id,
+        body,
+        createdAt: row.created_at,
+      });
+    }
+    return out;
+  }
+
+  appendPipelineDirective(input: {
+    rootRunId: string;
+    kind: PipelineDirectiveKind;
+    actorId?: string;
+    body: PipelineDirectiveBody;
+  }):
+    | { ok: true; id: string }
+    | { ok: false; reason: "not-found" | "count-cap" | "invalid-root" } {
+    return this.db.transaction(() => {
+      const root = this.getRun(input.rootRunId);
+      if (!root) {
+        return { ok: false as const, reason: "not-found" as const };
+      }
+      if (!this.isImplementFullyRootRun(root)) {
+        return { ok: false as const, reason: "invalid-root" as const };
+      }
+
+      const countRow = this.db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM pipeline_directives WHERE root_run_id = ?`
+        )
+        .get(input.rootRunId) as { n: number };
+
+      if (countRow.n >= PIPELINE_DIRECTIVE_MAX_COUNT) {
+        const oldest = this.db
+          .prepare(
+            `SELECT id FROM pipeline_directives
+             WHERE root_run_id = ?
+             ORDER BY created_at ASC, rowid ASC
+             LIMIT 1`
+          )
+          .get(input.rootRunId) as { id: string } | undefined;
+        if (oldest) {
+          this.db
+            .prepare(`DELETE FROM pipeline_directives WHERE id = ?`)
+            .run(oldest.id);
+        }
+      }
+
+      const id = randomUUID();
+      this.db
+        .prepare(
+          `INSERT INTO pipeline_directives (id, root_run_id, kind, actor_id, body_json)
+           VALUES (?, ?, ?, ?, ?)`
+        )
+        .run(
+          id,
+          input.rootRunId,
+          input.kind,
+          input.actorId ?? null,
+          JSON.stringify(input.body)
+        );
+      return { ok: true as const, id };
+    })();
   }
 }

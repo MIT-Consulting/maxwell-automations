@@ -21,6 +21,14 @@ import type {
   UpdateState,
   VersionIdentity,
 } from "../version.js";
+import type {
+  RoadmapReadinessReport,
+  RoadmapReadinessSummariesResponse,
+} from "../roadmap-readiness.js";
+import type {
+  RoadmapFixPlan,
+  RoadmapFixPlanDraft,
+} from "../roadmap-fix-plan.js";
 
 export type HealthResponse = {
   ok: true;
@@ -34,8 +42,13 @@ export type DaemonStatus = {
   pid: number;
   port: number;
   host: string;
-  /** Addresses the daemon is listening on — loopback plus any configured bind host. */
+  /** Addresses the daemon is listening on right now — loopback plus any configured bind host that bound. */
   bindAddresses: readonly string[];
+  /**
+   * Configured bind hosts not currently listening (e.g. a Tailscale IP that was
+   * unassigned at boot and is being retried). Optional for older daemons.
+   */
+  unboundHosts?: readonly string[];
   allowedIps: readonly string[];
   /** Whether the control-token app-auth layer is active (token configured). */
   remoteAuth: boolean;
@@ -53,6 +66,8 @@ export type DaemonStatus = {
   updateState?: UpdateState;
   lastCheckedAt?: string | null;
   releaseUrl?: string | null;
+  /** Node runtime of the live daemon (optional for mixed-version clients). */
+  runningNode?: string | null;
 };
 
 export type ListAutomationsResponse = {
@@ -150,6 +165,27 @@ export type GetRunResponse = {
   run: Run;
   events: RunEvent[];
   inputRequests: InputRequest[];
+};
+
+/** GET /api/pipeline-runs/:rootRunId — daemon-owned pipeline projection. */
+export type PipelineSnapshotResponse = {
+  rootRunId: string;
+  snapshot: import("../pipeline-snapshot.js").PipelineSnapshot;
+};
+
+/** GET /api/pipeline-runs?workspace=&feature= — newest root for a feature. */
+export type ResolvePipelineRunResponse = {
+  rootRunId: string;
+  snapshot: import("../pipeline-snapshot.js").PipelineSnapshot;
+};
+
+/** GET /api/pipeline-runs/:rootRunId/events — cursor long-poll feed. */
+export type PipelineFeedResponse = {
+  rootRunId: string;
+  events: import("../pipeline-feed.js").PipelineFeedEvent[];
+  snapshot: import("../pipeline-snapshot.js").PipelineSnapshot;
+  /** Advanced global `run_events.id`; never regresses below request `since`. */
+  cursor: number;
 };
 
 export type TriggerRunRequest = {
@@ -585,11 +621,25 @@ export type PipelineWorkerSummary = {
   chain: ChainConfig | null;
 };
 
+/** GET /api/workspaces/:id/roadmap-readiness — full readiness report. */
+export type GetWorkspaceRoadmapReadinessResponse = RoadmapReadinessReport;
+
+/** GET /api/roadmap-readiness — per-workspace summaries. */
+export type GetRoadmapReadinessSummariesResponse =
+  RoadmapReadinessSummariesResponse;
+
+/** GET /api/workspaces/:id/roadmap-fix-plan — additive CLI repair plan. */
+export type GetWorkspaceRoadmapFixPlanResponse =
+  | RoadmapFixPlan
+  | RoadmapFixPlanDraft;
+
 /** Workspace filesystem checks for dashboard kickoff (optional query). */
 export type PipelineWorkspacePreconditions = {
   workspaceId: string;
   gitRepo: boolean;
   roadmapIndex: boolean;
+  /** Present when readiness analysis runs for the workspace query. */
+  roadmapReadiness?: RoadmapReadinessReport;
 };
 
 /**
@@ -890,6 +940,8 @@ export type ChatPromotedFromRunPayload = {
 export type RunEscalationRequest = {
   action: RunEscalationAction;
   reason?: string;
+  /** Optional external orchestrator label (display metadata only). */
+  actorId?: string;
   /**
    * retry / skip only: replace these role selections in the lineage's
    * `roleModels` for the new child and every later step.
@@ -921,6 +973,7 @@ export type DeleteAutomationResponse = {
 
 export type AnswerInputRequest = {
   answer: string;
+  actorId?: string;
 };
 
 export type AnswerInputResponse = {
@@ -975,22 +1028,27 @@ export type UploadAttachmentResponse = {
 export type SendRunMessageRequest = {
   message: string;
   attachments?: AttachmentRef[];
+  actorId?: string;
 };
 export type SendRunMessageResponse = { ok: true };
 
 export type QueueRunMessageRequest = {
   message: string;
   attachments?: AttachmentRef[];
+  actorId?: string;
 };
 export type QueueRunMessageResponse = { ok: true; queuedMessageId?: string };
 export type InterruptRunRequest = {
   message: string;
   attachments?: AttachmentRef[];
+  actorId?: string;
 };
 export type InterruptRunResponse = { ok: true };
 
+export type PauseRunRequest = { actorId?: string };
 export type PauseRunResponse = { ok: true };
-export type ResumeRunRequest = { note?: string };
+export type CancelRunRequest = { actorId?: string };
+export type ResumeRunRequest = { note?: string; actorId?: string };
 export type ResumeRunResponse = { ok: true };
 
 export type DeleteRunsRequest = {

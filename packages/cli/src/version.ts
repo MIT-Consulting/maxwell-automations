@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join, parse } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  formatPersistedUpgradeActionsLines,
   formatRunningLabel,
   formatUpdateSummary,
   resolveInstallIdentity,
@@ -117,6 +118,14 @@ export function formatUpdateCheckReport(snapshot: UpdateSnapshot): string {
   if (snapshot.available?.notes) {
     lines.push(snapshot.available.notes);
   }
+  if (snapshot.available) {
+    lines.push("Upgrade actions");
+    for (const line of formatPersistedUpgradeActionsLines(
+      snapshot.available.upgradeActions
+    )) {
+      lines.push(`  ${line}`);
+    }
+  }
   return lines.join("\n");
 }
 
@@ -178,6 +187,7 @@ export async function checkUpdateLocally(
     settings: loadCliUpdateSettings(),
     running: identity.running,
     checkout: identity.checkout,
+    runningNode: process.versions.node,
     readCache: () => readText(cachePath),
     writeCache: (text) => {
       mkdirSync(dirname(cachePath), { recursive: true });
@@ -190,6 +200,7 @@ export async function checkUpdateLocally(
         ok: response.ok,
         headers: { get: (name) => response.headers.get(name) },
         json: () => response.json() as Promise<unknown>,
+        text: () => response.text(),
       };
     },
   });

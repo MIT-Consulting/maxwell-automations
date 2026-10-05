@@ -568,7 +568,7 @@ coordinator (out of scope for auto-halt recovery).
 - **Kick off** with the CLI verb (preferred):
 
   ```bash
-  lca implement-fully --feature <bN>
+  lca implement-fully --feature b42
   lca implement-fully --idea "<text>"
   ```
 
@@ -656,6 +656,55 @@ persisted. Historical six-variable contexts normalize to Quick/JIT
 normalizes to `normal`.
 
 ## Operator steering and pause
+
+### Active-step vs forward-only
+
+| Need | Command |
+| --- | --- |
+| Guide the **live** worker turn | `max message` / `max interrupt` (or dashboard chat steer on the run) |
+| Park for direct chat, then continue | `max pause` → chat → `max resume` |
+| Answer an Input Hub question | `max answer <runId\|feature-id>` |
+| Notes for **later** pipeline steps | `max directive b42 "<text>"` (or root run id) |
+| Swap a role model while running | `max escalate --feature b-dm58 --role <role>=<model>[?k=v]` (no halt action) |
+| Stop after this step settles | `max pipeline-stop b42 [--after-step] [--reason <text>]` (or root run id) |
+
+Forward directives are durable and append-only; they do **not** reach the active
+step. Prompt injection keeps the **newest** notes within the byte budget and drops
+the oldest from the injected block when over limit.
+
+`max pipeline-stop` refuses wave-track frontiers — use `lca wave <waveId> retry|abort`
+instead. `max stop` / `lca stop` tear down the daemon; they are not stop-after-step.
+
+### Feature targeting and actor attribution
+
+Every operator verb above accepts `--feature <feature-id>` (and `-w <workspace>` when not
+cwd-scoped) so orchestrators address a pipeline by backlog id (`b42`, `b-dm58`, …). Positional feature id or
+root run id still work; positional target **plus** `--feature` is a usage error.
+
+Set `LCA_ACTOR` or `X-LCA-Actor` to label durable events (max 64 printable chars).
+This is attribution only — not the remote control token.
+
+### Observation (`max watch`)
+
+Outside orchestrators should block on `max watch b42 --until … --json` (or a root run id) rather
+than polling the dashboard or probing SQLite. The daemon returns a snapshot plus a
+global event cursor; resume with `--since <cursor>`. Unknown or pruned cursors are
+valid lower bounds, not `404`.
+
+Interpret `snapshot.outcome`:
+
+- `green` — done (final gate succeeded with a `complete:` stop reason).
+- `blocked` / `deadlock` — terminal coordinator/final-gate outcomes; diagnose with
+  `max doctor <runId>`; do not re-kick.
+- `aborted` — operator abort.
+- `failed` — may be recoverable when `halt.recoveryCommand` is set (usually
+  `max escalate …`). A halt is **not** the same as a `--timeout` wait exit (code 14)
+  or a CLI runtime error (code 1).
+
+See [configuration](./configuration.md) § Pipeline snapshot, watch, and steering for
+exit codes and JSON envelope fields.
+
+### Pause and soft-steer (unchanged semantics)
 
 While a worker run is **live**, an operator may **soft-steer** it from an attached
 workspace chat (`POST /api/chats/:id/steer` / dashboard **Steer**): guidance is

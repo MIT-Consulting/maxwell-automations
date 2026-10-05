@@ -1,3 +1,9 @@
+import {
+  formatNodeFloorRefusal,
+  formatRunningNodeLabel,
+  satisfiesNodeFloor,
+  type NodeFloorCheckResult,
+} from "@lca/shared";
 import type {
   ArchitectResolutionSource,
   Automation,
@@ -5,6 +11,7 @@ import type {
   ChatSession,
   ChatSnapshot,
   ChainRunContext,
+  DaemonStatus,
   FeatureQueueEntry,
   FeatureQueueEntryState,
   GatekeeperResolutionSource,
@@ -17,11 +24,14 @@ import type {
   Workspace,
 } from "@lca/shared";
 import {
+  compareRoadmapFindings,
   comparePipelineRunOrder,
   describePipelineWaveStep,
+  roadmapReadinessHasBlockers,
   PIPELINE_HALT_DISCOVERY_ACTION_OUTCOMES,
   PIPELINE_HALT_DISCOVERY_FAILURE_STAGES,
   PIPELINE_HALT_DISCOVERY_SKIP_CODES,
+  PIPELINE_LIFECYCLE_EVENT_SET,
   PIPELINE_SKELETON_FALLBACK_ROLE,
   PIPELINE_SKELETON_ROLE,
   PIPELINE_TERMINAL_FALLBACK_ROLE,
@@ -29,6 +39,12 @@ import {
   pipelineSummaryFromContext,
   resolveRoleSelectionWithFallback,
   RUN_ESCALATION_ACTIONS,
+  type PipelineSnapshot,
+  type RoadmapFeaturePlan,
+  type RoadmapFindingImpact,
+  type RoadmapReadinessReport,
+  type RoadmapReadinessSummariesResponse,
+  type RoadmapReadinessWorkspaceSummary,
 } from "@lca/shared";
 import { DaemonError, type RunSnapshot } from "./client.js";
 
@@ -38,40 +54,13 @@ const HALT_DISCOVERY_TRIGGER_KIND = "halt-discovery";
 export const AUTH_ERROR_RE =
   /unauthenticated|ERROR_NOT_LOGGED_IN|not logged in|auth expired/i;
 
-export const DOCTOR_KEY_EVENTS = new Set([
-  "run.error",
-  "run.finished",
-  "run.resumed",
-  "run.revived",
-  "run.retained.fallback",
-  "run.retry.scheduled",
-  "run.reconciled",
-  "run.stalled",
-  "run.chained",
-  "run.chain-skipped",
-  "run.chain-control",
-  "run.pipeline-escalated",
-  "run.pipeline-halt-unrecovered",
-  "run.pipeline-halt-discovery-requested",
-  "run.pipeline-halt-discovery-skipped",
-  "run.pipeline-halt-discovery-failed",
-  "run.pipeline-halt-discovery-action-result",
-  "run.pipeline-resumed",
-  "run.pipeline-fanout",
-  "run.pipeline-track-completed",
-  "run.pipeline-join-ready",
-  "run.pipeline-integration-enqueued",
-  "run.pipeline-final-gate-enqueued",
-  "run.pipeline-feature-review-enqueued",
-  "run.pipeline-wave-finalized",
-  "run.pipeline-wave-blocked",
-  "run.pipeline-wave-recovered",
-  "run.pipeline-wave-cleanup",
-]);
+/** @deprecated Import `PIPELINE_LIFECYCLE_EVENT_SET` from `@lca/shared` instead. */
+export const DOCTOR_KEY_EVENTS = PIPELINE_LIFECYCLE_EVENT_SET;
 
 export type DoctorPipelineEscalation = {
   action: "retry" | "skip" | "abort";
   actor: "daemon" | "operator";
+  actorId: string | null;
   childRunId: string | null;
   recoveryDetail: string | null;
 };
@@ -277,7 +266,8 @@ export function latestPipelineEscalation(
     const childRunId =
       typeof childRaw === "string" && childRaw.length > 0 ? childRaw : null;
     const recoveryDetail = readStringField(record, "recoveryDetail") ?? null;
-    return { action, actor, childRunId, recoveryDetail };
+    const actorId = readStringField(record, "actorId") ?? null;
+    return { action, actor, actorId, childRunId, recoveryDetail };
   }
   return undefined;
 }
@@ -620,7 +610,9 @@ export function summarizeRecoveryEvent(
       escalation.childRunId != null
         ? ` → ${escalation.childRunId.slice(0, 8)}`
         : "";
-    return `${eventType}: ${escalation.actor} ${escalation.action}${childPart}`;
+    const actorPart =
+      escalation.actorId != null ? ` actorId=${escalation.actorId}` : "";
+    return `${eventType}: ${escalation.actor} ${escalation.action}${childPart}${actorPart}`;
   }
   if (eventType === "run.pipeline-halt-unrecovered") {
     const unrecovered = latestPipelineHaltUnrecovered(asEvents);
@@ -678,6 +670,13 @@ export function summarizeDiscoveryEvent(
   return undefined;
 }
 
+function actorIdSuffix(payload: Record<string, unknown> | undefined): string {
+  const actorId = payload?.actorId;
+  return typeof actorId === "string" && actorId.trim()
+    ? ` (actor: ${actorId})`
+    : "";
+}
+
 export function summarizeEvent(eventType: string, payloadRaw: string): string {
   const recovery = summarizeRecoveryEvent(eventType, payloadRaw);
   if (recovery !== undefined) return recovery;
@@ -690,13 +689,22 @@ export function summarizeEvent(eventType: string, payloadRaw: string): string {
   } catch {
     payload = undefined;
   }
+  const actor = actorIdSuffix(payload);
   if (payload) {
-    if (typeof payload.question === "string") return `asking: ${payload.question}`;
-    if (typeof payload.answer === "string") return `${eventType}: ${payload.answer}`;
-    if (typeof payload.message === "string") return `${eventType}: ${payload.message}`;
-    if (typeof payload.text === "string") return `${eventType}: ${payload.text}`;
+    if (typeof payload.question === "string") {
+      return `asking: ${payload.question}${actor}`;
+    }
+    if (typeof payload.answer === "string") {
+      return `${eventType}: ${payload.answer}${actor}`;
+    }
+    if (typeof payload.message === "string") {
+      return `${eventType}: ${payload.message}${actor}`;
+    }
+    if (typeof payload.text === "string") {
+      return `${eventType}: ${payload.text}${actor}`;
+    }
   }
-  return eventType;
+  return actor ? `${eventType}${actor}` : eventType;
 }
 
 export function parseEventPayload(
@@ -1162,15 +1170,169 @@ function transitionClaimFor(
 }
 
 /**
+ * Adapt a daemon pipeline snapshot to doctor facts for the run under diagnosis.
+ * Never throws; never includes idea text.
+ */
+export function snapshotToDoctorFacts(
+  pipeline: PipelineSnapshot,
+  currentRunId: string,
+  runSnapshot: RunSnapshot,
+  automation: Automation | undefined
+): PipelineDoctorFacts | null {
+  const root = pipeline.rootRunId;
+  const step =
+    pipeline.steps.find((s) => s.runId === currentRunId) ??
+    pipeline.steps[pipeline.steps.length - 1];
+
+  const parsed = parseDoctorChainContext(runSnapshot.run.chain_context_json);
+  const contextUnavailable =
+    pipeline.contextUnavailable || (parsed != null && !parsed.ok);
+
+  const depth = runSnapshot.run.chain_depth;
+  const depthUnavailable = depth == null;
+  const override = runSnapshot.run.chain_max_depth_override;
+  const baseMax = runSnapshot.run.chain_max_depth;
+  const budgetOverrideInForce =
+    pipeline.budgetOverrideInForce || override != null;
+  const effectiveBudget =
+    pipeline.totals.effectiveBudget ?? override ?? baseMax ?? null;
+
+  const configKey = automation?.configKey;
+  const automationUnavailable = automation == null;
+  const waveSummary = runSnapshot.pipelineWave ?? pipeline.waves.summary;
+  const trackSummary = runSnapshot.pipelineTrack ?? null;
+  const waveDetail = runSnapshot.pipelineWaveDetail ?? null;
+  const trackDetail = runSnapshot.pipelineTrackDetail ?? null;
+
+  const roleNames: string[] = [];
+  if (parsed?.ok === true && parsed.context.roleModels) {
+    for (const [role, selection] of Object.entries(parsed.context.roleModels)) {
+      const modelId =
+        selection && typeof selection === "object" && "id" in selection
+          ? String((selection as { id: unknown }).id)
+          : "?";
+      roleNames.push(`${role}=${modelId}`);
+    }
+  }
+
+  const workerKey = step?.workerKey ?? null;
+  let gatekeeperModelId: string | null = null;
+  let gatekeeperSource: GatekeeperResolutionSource | null = null;
+  if (workerKey === "final-gate" && parsed?.ok === true && parsed.context.roleModels) {
+    const resolved = resolveRoleSelectionWithFallback(
+      parsed.context.roleModels,
+      PIPELINE_TERMINAL_ROLE,
+      PIPELINE_TERMINAL_FALLBACK_ROLE
+    );
+    if (resolved) {
+      gatekeeperModelId = resolved.selection.id;
+      gatekeeperSource = resolved.source as GatekeeperResolutionSource;
+    }
+  }
+
+  let architectModelId: string | null = null;
+  let architectSource: ArchitectResolutionSource | null = null;
+  if (workerKey === "plan-skeleton" && parsed?.ok === true && parsed.context.roleModels) {
+    const resolved = resolveRoleSelectionWithFallback(
+      parsed.context.roleModels,
+      PIPELINE_SKELETON_ROLE,
+      PIPELINE_SKELETON_FALLBACK_ROLE
+    );
+    if (resolved) {
+      architectModelId = resolved.selection.id;
+      architectSource = resolved.source as ArchitectResolutionSource;
+    }
+  }
+
+  let barrierProgress: string | null = null;
+  if (waveSummary) {
+    barrierProgress = `${waveSummary.completedTrackCount}/${waveSummary.trackCount} tracks`;
+    if (waveSummary.joinClaimed) {
+      barrierProgress += ", join claimed";
+    }
+    if (waveSummary.finalized) {
+      barrierProgress += ", finalized";
+    }
+  }
+
+  const waveId = waveSummary?.id ?? runSnapshot.run.pipeline_wave_id ?? null;
+  let waveRecoveryCommand: string | null = null;
+  if (waveSummary?.status === "blocked" && waveId) {
+    const shortId = waveId.slice(0, 8);
+    waveRecoveryCommand = `lca wave ${shortId} retry  |  lca wave ${shortId} abort`;
+  }
+
+  const loopMode = pipeline.loopMode;
+
+  return {
+    featureId: pipeline.featureId || null,
+    featureSlug: pipeline.featureSlug,
+    pipelineId: pipeline.pipelineId,
+    stepLabel:
+      step?.stepLabel ??
+      stepLabelFor(configKey, depth, {
+        waveOrdinal: waveSummary?.ordinal ?? null,
+        trackOrdinal: trackSummary?.ordinal ?? null,
+        phaseRef: trackSummary?.phaseRef ?? null,
+      }),
+    cycle: step?.cycle ?? null,
+    stepInCycle: step?.stepInCycle ?? null,
+    workerKey,
+    depth: depth ?? null,
+    effectiveBudget,
+    budgetOverrideInForce,
+    rootRunId: root,
+    isRoot: currentRunId === root,
+    stopRequestedAt:
+      runSnapshot.run.chain_stop_requested_at ?? pipeline.stopRequestedAt,
+    stopReason: runSnapshot.run.chain_stop_reason ?? pipeline.stopReason,
+    transitionClaim: transitionClaimFor(runSnapshot),
+    contextUnavailable,
+    depthUnavailable,
+    automationUnavailable,
+    roleNames,
+    gatekeeperModelId,
+    gatekeeperSource,
+    architectModelId,
+    architectSource,
+    waveOrdinal: waveSummary?.ordinal ?? step?.waveOrdinal ?? null,
+    trackOrdinal: trackSummary?.ordinal ?? step?.trackOrdinal ?? null,
+    phaseRef: trackSummary?.phaseRef ?? step?.phaseRef ?? null,
+    waveStatus: waveSummary?.status ?? null,
+    trackStatus: trackSummary?.status ?? step?.trackStatus ?? null,
+    barrierProgress,
+    integrationRunId: waveDetail?.integrationRunId ?? null,
+    blockedCode: waveSummary?.blockedCode ?? waveDetail?.blockedCode ?? null,
+    blockedDetail: waveDetail?.blockedDetail ?? null,
+    branchName: trackDetail?.branchName ?? null,
+    headCommit: trackDetail?.headCommit ?? null,
+    baseCommit: waveDetail?.baseCommit ?? null,
+    cleanupRequired: waveSummary?.cleanupRequired ?? false,
+    waveRecoveryCommand,
+    loopMode,
+  };
+}
+
+/**
  * Derive pipeline facts for a doctor report. Returns null when the run is not
  * part of a pipeline (no chain_root_run_id). Never throws; never includes idea text.
  */
 export function collectPipelineDoctorFacts(
   snapshot: RunSnapshot,
-  automation: Automation | undefined
+  automation: Automation | undefined,
+  pipelineSnapshot?: PipelineSnapshot | null
 ): PipelineDoctorFacts | null {
   const root = snapshot.run.chain_root_run_id;
   if (root == null || root === "") return null;
+
+  if (pipelineSnapshot) {
+    return snapshotToDoctorFacts(
+      pipelineSnapshot,
+      snapshot.run.id,
+      snapshot,
+      automation
+    );
+  }
 
   const parsed = parseDoctorChainContext(snapshot.run.chain_context_json);
   const contextUnavailable = parsed != null && !parsed.ok;
@@ -1719,9 +1881,168 @@ export function formatPipelineHealthLines(
   return lines;
 }
 
+export type SkillCopyStatus = "in-sync" | "drift" | "unavailable";
+
+export type EnvironmentFacts = {
+  cliNode: string;
+  requirement: string | null;
+  requirementSource: "embed" | "package.json" | null;
+  daemonNode?: string;
+  npmVersion: string | null;
+  npmUnavailableReason?: string;
+  skillStatus: SkillCopyStatus;
+  skillUnavailableReason?: string;
+};
+
+export type EnvironmentNodeLine = {
+  kind: "ok" | "mismatch" | "unknown-requirement";
+  cliLabel: string;
+  requirement: string | null;
+  daemonLabel?: string;
+  fix?: string;
+};
+
+export type EnvironmentSummary = {
+  node: EnvironmentNodeLine;
+  npm: { version: string | null; fix?: string };
+  skills: { status: SkillCopyStatus; detail: string; fix?: string };
+};
+
+export function summarizeEnvironment(facts: EnvironmentFacts): EnvironmentSummary {
+  let node: EnvironmentNodeLine;
+  if (!facts.requirement) {
+    node = {
+      kind: "unknown-requirement",
+      cliLabel: formatRunningNodeLabel(facts.cliNode),
+      requirement: null,
+      fix:
+        "Could not resolve the required Node version from version-embed.json or package.json.",
+    };
+  } else {
+    const check: NodeFloorCheckResult = satisfiesNodeFloor(
+      facts.cliNode,
+      facts.requirement
+    );
+    const cliLabel = formatRunningNodeLabel(facts.cliNode);
+    if (check.ok) {
+      node = {
+        kind: "ok",
+        cliLabel,
+        requirement: facts.requirement,
+        daemonLabel:
+          facts.daemonNode != null
+            ? formatRunningNodeLabel(facts.daemonNode)
+            : undefined,
+      };
+    } else {
+      node = {
+        kind: "mismatch",
+        cliLabel,
+        requirement: facts.requirement,
+        daemonLabel:
+          facts.daemonNode != null
+            ? formatRunningNodeLabel(facts.daemonNode)
+            : undefined,
+        fix: formatNodeFloorRefusal({
+          requirement: facts.requirement,
+          running: facts.cliNode,
+        }),
+      };
+    }
+  }
+
+  const npm =
+    facts.npmVersion != null
+      ? { version: facts.npmVersion }
+      : {
+          version: null as string | null,
+          fix: `${facts.npmUnavailableReason ?? "npm version probe failed"}. Ensure npm is on PATH, then re-run max doctor.`,
+        };
+
+  let skillsDetail: string;
+  let skillsFix: string | undefined;
+  switch (facts.skillStatus) {
+    case "in-sync":
+      skillsDetail = "in sync with this checkout";
+      break;
+    case "drift":
+      skillsDetail = "differs from this checkout";
+      skillsFix = "max skills install";
+      break;
+    default:
+      skillsDetail = facts.skillUnavailableReason ?? "check unavailable";
+      skillsFix = "max skills install";
+      break;
+  }
+
+  return {
+    node,
+    npm,
+    skills: {
+      status: facts.skillStatus,
+      detail: skillsDetail,
+      fix: skillsFix,
+    },
+  };
+}
+
+export function formatEnvironmentLines(summary: EnvironmentSummary): string[] {
+  const lines: string[] = [];
+  const req =
+    summary.node.requirement != null
+      ? ` (requires ${summary.node.requirement})`
+      : "";
+
+  if (summary.node.kind === "ok") {
+    if (
+      summary.node.daemonLabel != null &&
+      summary.node.daemonLabel !== summary.node.cliLabel
+    ) {
+      lines.push(
+        `  Node: CLI ${summary.node.cliLabel}${req}; daemon ${summary.node.daemonLabel}${req}`
+      );
+    } else if (summary.node.daemonLabel != null) {
+      lines.push(
+        `  Node: ${summary.node.cliLabel}${req} (CLI and daemon)`
+      );
+    } else {
+      lines.push(`  Node: ${summary.node.cliLabel}${req}`);
+    }
+  } else {
+    lines.push(`  Node: CLI ${summary.node.cliLabel}${req}`);
+    if (summary.node.daemonLabel != null) {
+      lines.push(`  Node (daemon): ${summary.node.daemonLabel}${req}`);
+    }
+    if (summary.node.fix) {
+      lines.push(`  fix: ${summary.node.fix}`);
+    }
+  }
+
+  if (summary.npm.version != null) {
+    lines.push(`  npm: ${summary.npm.version}`);
+  } else {
+    lines.push(`  npm: unavailable`);
+    if (summary.npm.fix) {
+      lines.push(`  fix: ${summary.npm.fix}`);
+    }
+  }
+
+  lines.push(`  skills: ${summary.skills.detail}`);
+  if (summary.skills.fix && summary.skills.status !== "in-sync") {
+    lines.push(`  fix: ${summary.skills.fix}`);
+  }
+
+  return lines;
+}
+
 export type FeatureQueueSummary = {
   counts: Record<FeatureQueueEntryState, number>;
-  running: { featureId: string; runId: string } | null;
+  running: {
+    featureId: string;
+    runId: string;
+    origin: FeatureQueueEntry["origin"];
+    count: number;
+  } | null;
   failed: Array<{ featureId: string; detail: string | null }>;
   blocked: Array<{ featureId: string; detail: string | null }>;
   nextEligibleFeatureId: string | null;
@@ -1800,12 +2121,15 @@ export function summarizeFeatureQueue(
     counts[entry.state] += 1;
   }
 
-  const runningEntry = entries.find((e) => e.state === "running");
+  const runningEntries = entries.filter((e) => e.state === "running");
+  const runningEntry = runningEntries[0];
   const running =
     runningEntry != null
       ? {
           featureId: runningEntry.featureId,
           runId: runningEntry.runId ?? "",
+          origin: runningEntry.origin ?? "queue",
+          count: runningEntries.length,
         }
       : null;
 
@@ -1848,8 +2172,14 @@ export function formatFeatureQueueLines(
     const shortRun = summary.running.runId
       ? summary.running.runId.slice(0, 8)
       : "—";
+    const originTag =
+      summary.running.origin === "direct" ? " [direct]" : "";
+    const multi =
+      summary.running.count > 1
+        ? ` (+${summary.running.count - 1} more running)`
+        : "";
     lines.push(
-      `  running: ${summary.running.featureId}  ${shortRun}`
+      `  running: ${summary.running.featureId}${originTag}  ${shortRun}${multi}`
     );
   } else {
     lines.push(`  running: (none)`);
@@ -1977,4 +2307,330 @@ export async function resolveDoctorTarget(
   }
   const snapshot = await client.getChat(chatMatches[0].id);
   return { kind: "chat", snapshot };
+}
+
+const ROADMAP_IMPACT_ORDER: RoadmapFindingImpact[] = [
+  "blocks-all",
+  "blocks-some",
+  "idea-only",
+  "info",
+];
+
+const ROADMAP_IMPACT_LABELS: Record<RoadmapFindingImpact, string> = {
+  "blocks-all": "blocked",
+  "blocks-some": "blocked",
+  "idea-only": "--idea",
+  info: "info",
+};
+
+export function describeRoadmapFeaturePlan(feature: RoadmapFeaturePlan): string {
+  let plan = feature.id;
+  if (feature.slug) {
+    if (feature.kind === "dir") {
+      plan += ` → existing folder ${feature.slug}`;
+    } else if (feature.kind === "file") {
+      plan += ` → document ${feature.slug}.md`;
+    } else if (feature.kind === "derived") {
+      plan += ` → derived slug ${feature.slug}`;
+    } else {
+      plan += ` → ${feature.slug}`;
+    }
+  } else if (feature.kind === "derived") {
+    plan += " → derived slug at kickoff";
+  } else if (feature.reason) {
+    plan += ` → ${feature.reason}`;
+  }
+  if (feature.nextPhase) {
+    plan += `, Phase ${feature.nextPhase.n} ${feature.nextPhase.status}`;
+  }
+  return plan;
+}
+
+export function formatRoadmapSummaryLine(
+  label: string,
+  summary: RoadmapReadinessWorkspaceSummary
+): string {
+  const blockers =
+    summary.counts["blocks-all"] + summary.counts["blocks-some"];
+  if (summary.state === "ready") {
+    const info =
+      summary.counts.info > 0 ? `, ${summary.counts.info} info` : "";
+    return `  ${label} — ready${info}`;
+  }
+  if (blockers > 0) {
+    return `  ${label} — ${summary.state}, ${blockers} blocker(s)`;
+  }
+  return `  ${label} — ${summary.state}`;
+}
+
+export function formatRoadmapSummaryLines(
+  summaries: RoadmapReadinessSummariesResponse,
+  workspaceLabels: ReadonlyMap<string, string>
+): string[] {
+  if (summaries.workspaces.length === 0) {
+    return ["  (no workspaces registered)"];
+  }
+  return summaries.workspaces.map((summary) =>
+    formatRoadmapSummaryLine(
+      workspaceLabels.get(summary.workspaceId) ?? summary.workspaceId.slice(0, 8),
+      summary
+    )
+  );
+}
+
+export function formatRoadmapFullReportLines(
+  workspaceLabel: string,
+  report: RoadmapReadinessReport
+): string[] {
+  const lines: string[] = [];
+  const blockers = report.findings.filter(
+    (f) => f.impact === "blocks-all" || f.impact === "blocks-some"
+  ).length;
+  const headline =
+    blockers > 0
+      ? `Roadmap  ${workspaceLabel} — ${blockers} change(s) needed before implement-fully`
+      : `Roadmap  ${workspaceLabel} — ${report.state}`;
+  lines.push(headline);
+
+  const sorted = [...report.findings].sort(compareRoadmapFindings);
+  for (const impact of ROADMAP_IMPACT_ORDER) {
+    for (const finding of sorted.filter((f) => f.impact === impact)) {
+      lines.push(`  ${ROADMAP_IMPACT_LABELS[impact]}  ${finding.message}`);
+      lines.push(`           ${finding.fix}`);
+    }
+  }
+
+  if (report.features.length > 0) {
+    lines.push("");
+    lines.push("  Per feature:");
+    for (const feature of report.features) {
+      lines.push(`    ${describeRoadmapFeaturePlan(feature)}`);
+    }
+  }
+
+  return lines;
+}
+
+export function roadmapDoctorExitCode(report: RoadmapReadinessReport): number {
+  return roadmapReadinessHasBlockers(report) ? 1 : 0;
+}
+
+export const ROADMAP_DAEMON_DOWN_LINE =
+  "  (daemon not running — roadmap readiness unavailable; run max up)";
+
+export const DOCTOR_SUPPORT_REPORT_VERSION = 1;
+
+export type DoctorSupportReportFinding = {
+  code: string;
+  impact: RoadmapFindingImpact;
+  featureIds?: string[];
+  path?: string;
+};
+
+export type DoctorSupportReportRoadmap = {
+  alias: string;
+  state: RoadmapReadinessWorkspaceSummary["state"];
+  counts: RoadmapReadinessWorkspaceSummary["counts"];
+  findings: DoctorSupportReportFinding[];
+};
+
+export type DoctorSupportReport = {
+  version: typeof DOCTOR_SUPPORT_REPORT_VERSION;
+  generatedAt: string;
+  cliVersion: string;
+  daemonVersion: string | null;
+  environment: {
+    nodeCli: string;
+    nodeDaemon: string | null;
+    nodeRequirement: string | null;
+    npm: string | null;
+    skills: SkillCopyStatus;
+  };
+  daemon: {
+    running: boolean;
+    mode: "dev" | "prod" | null;
+    remoteAuth: boolean | null;
+    uptimeMs: number | null;
+  };
+  roadmaps: DoctorSupportReportRoadmap[];
+  pipelines: {
+    activeCount: number;
+    pausedCount: number;
+    haltedCount: number;
+    staleNeedsInputCount: number;
+    runningTrackCount: number;
+    blockedWaveCount: number;
+  };
+  queue: {
+    counts: FeatureQueueSummary["counts"];
+    isEmpty: boolean;
+    failedCount: number;
+    blockedCount: number;
+  };
+  recentFailures: Array<{
+    runIdPrefix: string;
+    status: Run["status"];
+    automationIdPrefix: string;
+  }>;
+};
+
+export type DoctorSupportReportClient = {
+  listWorkspaces(): Promise<Workspace[]>;
+  getRoadmapReadinessSummaries(): Promise<RoadmapReadinessSummariesResponse>;
+  getWorkspaceRoadmapReadiness(
+    workspaceId: string
+  ): Promise<RoadmapReadinessReport>;
+  listRuns(limit?: number): Promise<Run[]>;
+  listFeatureQueue(): Promise<FeatureQueueEntry[]>;
+  listAutomations(): Promise<Automation[]>;
+};
+
+function sanitizeRoadmapFinding(
+  finding: RoadmapReadinessReport["findings"][number]
+): DoctorSupportReportFinding {
+  const safe: DoctorSupportReportFinding = {
+    code: finding.code,
+    impact: finding.impact,
+  };
+  if (finding.featureIds?.length) {
+    safe.featureIds = [...finding.featureIds];
+  }
+  if (
+    finding.path != null &&
+    (finding.path.startsWith("docs/") || finding.path.startsWith("ROADMAP"))
+  ) {
+    safe.path = finding.path;
+  }
+  return safe;
+}
+
+export function aliasWorkspaceIds(
+  workspaceIds: readonly string[]
+): Map<string, string> {
+  const sorted = [...workspaceIds].sort((a, b) => a.localeCompare(b));
+  return new Map(sorted.map((id, index) => [id, `ws${index + 1}`]));
+}
+
+export async function buildDoctorSupportReport(input: {
+  cliVersion: string;
+  environment: EnvironmentFacts;
+  live: DaemonStatus | null;
+  client: DoctorSupportReportClient | null;
+}): Promise<DoctorSupportReport> {
+  const report: DoctorSupportReport = {
+    version: DOCTOR_SUPPORT_REPORT_VERSION,
+    generatedAt: new Date().toISOString(),
+    cliVersion: input.cliVersion,
+    daemonVersion: input.live?.version ?? null,
+    environment: {
+      nodeCli: input.environment.cliNode,
+      nodeDaemon: input.environment.daemonNode ?? null,
+      nodeRequirement: input.environment.requirement,
+      npm: input.environment.npmVersion,
+      skills: input.environment.skillStatus,
+    },
+    daemon: {
+      running: input.live != null,
+      mode: input.live?.mode ?? null,
+      remoteAuth: input.live?.remoteAuth ?? null,
+      uptimeMs: input.live?.uptimeMs ?? null,
+    },
+    roadmaps: [],
+    pipelines: {
+      activeCount: 0,
+      pausedCount: 0,
+      haltedCount: 0,
+      staleNeedsInputCount: 0,
+      runningTrackCount: 0,
+      blockedWaveCount: 0,
+    },
+    queue: {
+      counts: {
+        queued: 0,
+        running: 0,
+        done: 0,
+        failed: 0,
+        blocked: 0,
+        cancelled: 0,
+      },
+      isEmpty: true,
+      failedCount: 0,
+      blockedCount: 0,
+    },
+    recentFailures: [],
+  };
+
+  if (input.client == null || input.live == null) {
+    return report;
+  }
+
+  const [summaries, runs, queueEntries] = await Promise.all([
+    input.client.getRoadmapReadinessSummaries(),
+    input.client.listRuns(100),
+    input.client.listFeatureQueue(),
+  ]);
+
+  const aliases = aliasWorkspaceIds(
+    summaries.workspaces.map((ws) => ws.workspaceId)
+  );
+
+  report.roadmaps = await Promise.all(
+    summaries.workspaces.map(async (summary) => {
+      let findings: DoctorSupportReportFinding[] = [];
+      try {
+        const full = await input.client!.getWorkspaceRoadmapReadiness(
+          summary.workspaceId
+        );
+        findings = full.findings.map(sanitizeRoadmapFinding);
+      } catch {
+        findings = [];
+      }
+      return {
+        alias: aliases.get(summary.workspaceId) ?? "ws?",
+        state: summary.state,
+        counts: { ...summary.counts },
+        findings,
+      };
+    })
+  );
+
+  const pipelineSummary = summarizePipelineHealth(runs);
+  report.pipelines = {
+    activeCount: pipelineSummary.activeCount,
+    pausedCount: pipelineSummary.pausedCount,
+    haltedCount: pipelineSummary.halted.length,
+    staleNeedsInputCount: pipelineSummary.staleNeedsInput.length,
+    runningTrackCount: pipelineSummary.runningTracks.length,
+    blockedWaveCount: pipelineSummary.blockedWaves.length,
+  };
+
+  const queueSummary = summarizeFeatureQueue(queueEntries);
+  report.queue = {
+    counts: { ...queueSummary.counts },
+    isEmpty: queueSummary.isEmpty,
+    failedCount: queueSummary.failed.length,
+    blockedCount: queueSummary.blocked.length,
+  };
+
+  const automations = await input.client.listAutomations();
+  const autoPrefix = new Map(
+    automations.map((a) => [a.id, a.id.slice(0, 8)])
+  );
+
+  report.recentFailures = runs
+    .filter((r) => r.status === "failed")
+    .slice(0, 5)
+    .map((r) => ({
+      runIdPrefix: r.id.slice(0, 8),
+      status: r.status,
+      automationIdPrefix: autoPrefix.get(r.automationId) ?? r.automationId.slice(0, 8),
+    }));
+
+  return report;
+}
+
+export function formatDoctorSupportReportText(
+  report: DoctorSupportReport
+): string {
+  return `${JSON.stringify(report, null, 2)}\n`;
 }

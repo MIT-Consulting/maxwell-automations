@@ -81,7 +81,7 @@ function insertRun(
     args.workspaceId,
     args.status,
     args.chainRootRunId ?? null,
-    args.parentRunId ?? null
+    args.parentRunId ?? args.chainRootRunId ?? null
   );
 }
 
@@ -183,13 +183,19 @@ async function createHarness(options?: { withNotifier?: boolean }) {
         throw new Error("no running entry");
       }
       const rootRunId = running.run_id;
+      const gateRunId = randomUUID();
       insertRun(db, {
-        id: randomUUID(),
+        id: gateRunId,
         automationId: terminalAutomationId,
         workspaceId,
         status: "completed",
         chainRootRunId: rootRunId,
+        parentRunId: rootRunId,
       });
+      db.prepare(
+        `UPDATE runs SET chain_stop_requested_at = datetime('now'),
+           chain_stop_reason = ? WHERE id = ?`
+      ).run("complete: green", gateRunId);
       db.prepare(`UPDATE runs SET status = 'completed' WHERE id = ?`).run(rootRunId);
       events.emitRunStatus(rootRunId, "completed");
       await until(
@@ -208,7 +214,7 @@ async function createHarness(options?: { withNotifier?: boolean }) {
 describe("b58.4 queue batch digest notify", () => {
   it("registers queue_batch_complete in the alert catalog and schema", () => {
     expect(ALERT_NOTIFY_EVENTS).toContain("queue_batch_complete");
-    expect(ALERT_NOTIFY_EVENTS).toHaveLength(13);
+    expect(ALERT_NOTIFY_EVENTS).toHaveLength(14);
     expect(DEFAULT_NOTIFY_EVENT_PREFS.queue_batch_complete).toEqual({
       toast: true,
       ntfy: true,

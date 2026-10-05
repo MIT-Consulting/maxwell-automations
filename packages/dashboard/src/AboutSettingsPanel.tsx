@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState, type JSX } from "react";
 import {
+  formatPersistedUpgradeActionsLines,
   formatRunningLabel,
+  formatRunningNodeLabel,
+  satisfiesNodeFloor,
   updateStateDetail,
   type DaemonStatus,
   type UpdateState,
@@ -121,6 +124,7 @@ export function AboutSettingsPanel({
               updateState: snapshot.updateState,
               lastCheckedAt: snapshot.lastCheckedAt,
               releaseUrl: snapshot.releaseUrl,
+              runningNode: snapshot.runningNode,
             }
           : prev
       );
@@ -137,6 +141,22 @@ export function AboutSettingsPanel({
   const showCheckout =
     Boolean(checkout) && checkout!.version !== running?.version;
   const state = status?.updateState;
+  const runningNode = status?.runningNode ?? null;
+  const available = status?.available;
+  const nodeFloor = available?.nodeFloor ?? null;
+  const floorCheck =
+    nodeFloor && runningNode
+      ? satisfiesNodeFloor(runningNode, nodeFloor)
+      : null;
+  const unmetFloor =
+    state === "available" &&
+    floorCheck !== null &&
+    !floorCheck.ok &&
+    floorCheck.minimum !== null;
+  const updateDetailInput =
+    state && available
+      ? { updateState: state, available, runningNode }
+      : null;
 
   return (
     <div className="mx-auto flex w-full max-w-2xl min-h-0 flex-1 flex-col gap-6 overflow-y-auto p-4 sm:p-6">
@@ -219,9 +239,55 @@ export function AboutSettingsPanel({
               </div>
             )}
 
+            {(nodeFloor || runningNode) && (
+              <div className="rounded-lg border border-border/80 bg-background/60 p-3.5 text-xs text-muted-foreground">
+                <p className="m-0 font-medium text-foreground">Node requirement</p>
+                <p className="m-0 mt-1">
+                  Required:{" "}
+                  <span className="font-mono text-foreground">
+                    {nodeFloor ?? "unknown"}
+                  </span>
+                  {" · "}
+                  Running:{" "}
+                  <span className="font-mono text-foreground">
+                    {runningNode ? formatRunningNodeLabel(runningNode) : "unknown"}
+                  </span>
+                </p>
+                {unmetFloor && (
+                  <p className="m-0 mt-2 text-amber-300/90">
+                    Install Node {nodeFloor?.replace(/^>=\s*/, "") ?? "22 LTS"} from{" "}
+                    <a
+                      href="https://nodejs.org/en/download"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="underline hover:text-amber-200"
+                    >
+                      nodejs.org
+                    </a>
+                    , then retry Check now.
+                  </p>
+                )}
+              </div>
+            )}
+
+            {available && (
+              <div className="rounded-lg border border-border/80 bg-background/60 p-3.5 text-xs text-muted-foreground">
+                <p className="m-0 font-medium text-foreground">Upgrade actions</p>
+                <ul className="m-0 mt-1.5 list-none space-y-1 pl-0 font-mono">
+                  {formatPersistedUpgradeActionsLines(available.upgradeActions).map(
+                    (line) => (
+                      <li key={line} className="whitespace-pre-wrap">
+                        {line}
+                      </li>
+                    )
+                  )}
+                </ul>
+              </div>
+            )}
+
             {state && (
               <p className="m-0 text-xs text-muted-foreground">
-                {updateStateDetail(state)}
+                {updateStateDetail(state, updateDetailInput)}
               </p>
             )}
           </div>
@@ -323,7 +389,7 @@ export function AboutSettingsPanel({
               {state ?? "Unknown"}
             </span>
             <span className="text-[11px] text-muted-foreground">
-              {state ? updateStateDetail(state) : "No state reported"}
+              {state ? updateStateDetail(state, updateDetailInput) : "No state reported"}
             </span>
           </div>
 

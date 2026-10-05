@@ -36,7 +36,7 @@ The CLI is **`max`**. `lca` is a permanent alias. Not the Zendesk MySQL CDC tool
   servers, and rules are available to every run.
 - **Model variants:** automations, runs, chats, and workspace defaults persist full
   Cursor `ModelSelection` values (base id + catalog parameters). Scalar YAML
-  `model: grok-4.5` still works; see
+  `model: grok-4.6` still works; see
   [configuration → Model selection](./docs/configuration.md#model-selection).
 - **Triggers:** cron, git hooks, file-watch, and a generic `command` trigger
   (test-failure is just `command: npm test`).
@@ -57,17 +57,32 @@ The CLI is **`max`**. `lca` is a permanent alias. Not the Zendesk MySQL CDC tool
 
 ## Getting Started
 
+From a Max checkout, use **`npm ci`** (not bare `npm install`) so the lockfile
+and `engine-strict` Node floor are honored.
+
 ```bash
-npm install
+npm ci
 npm run build
 # ~/.cursor-local-automations/.env  →  CURSOR_API_KEY=crsr_...
-# ~/.cursor-local-automations/automations.yaml  →  workspaces: [your repo path]
-npm run daemon
-# Trigger a run: POST http://127.0.0.1:3747/api/runs  {"automationId":"..."}
-# Optional: install the /implement-fully entry skill into ~/.cursor/skills/
-max skills install       # or: npm run install:skill
-max roadmap init         # if the workspace has no docs/roadmap/ yet
+npm link -w @lca/cli    # global max/lca — or use npx lca … everywhere below
+max skills install      # or: npm run install:skill — copies max-setup + pipeline skills
+max up                  # start the daemon (required before roadmap readiness)
+max workspace add <path>   # register your project repo
+max doctor              # Environment + Roadmaps summary
+max doctor <path> --json   # readiness loop (fixable_by); exit 0 = ready
 ```
+
+**Branches after doctor:**
+
+- **Create** (empty): `max roadmap init`
+- **Adopt** (competing backlog files): follow the `max-setup` skill and
+  [Adopting an existing backlog](./docs/roadmap-format.md#adopting-an-existing-backlog)
+- **Ready**: kick off documented work with `max implement-fully --feature b42`
+
+Fresh Cursor chats in this checkout should read [AGENTS.md](./AGENTS.md) first,
+then invoke the **`max-setup`** skill for setup, upgrade, and adoption.
+
+Check skill drift anytime: `max skills install --check` (rerun install after upgrades).
 
 ### CLI (`max`, alias `lca`)
 
@@ -77,11 +92,19 @@ With the daemon running, drive it from the terminal (`npm run build` first, or
 ```bash
 max list                 # automations + recent run states (all workspaces)
 max list --workspace <id|name|path>   # same view, one workspace (-w)
-max doctor [runId]       # diagnose a run (events + daemon log) or daemon health
+max workspace add <path> # register a repository with the daemon
+max doctor [runId|chatId|workspace]  # run/chat, roadmap readiness, or daemon health
+max doctor <path> --json # typed readiness report (agents — text lacks fixable_by)
+max doctor --report      # pasteable support bundle
+max roadmap init [dir]   # scaffold docs/roadmap/00-index.md when empty
+max roadmap fix [workspace] [--yes]   # additive index repairs
+max update check         # approved release + Upgrade actions
+max update --apply --dry-run   # inspect apply plan without stopping daemon
+max skills install [--check|--dry-run]   # sync bundled skills to ~/.cursor/skills/
 max enable <id|name>     # arm an automation (disable to disarm)
 max run <id|name>        # trigger a run; prompts inline if it asks for input
-max implement-fully --feature <bN>   # documented work (or --idea for new work)
-max implement-fully --feature <bN> --execute   # execute mode (pre-planned contracts)
+max implement-fully --feature b42   # documented work (or b-dm58; --idea for new work)
+max implement-fully --feature b42 --execute   # execute mode (pre-planned contracts)
 max logs <runId>         # tail and follow a run's events (--no-follow to just print)
 max answer <runId> text  # answer a run waiting on input
 max pause <runId>        # park a running automation for steering chat

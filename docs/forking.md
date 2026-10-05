@@ -11,12 +11,12 @@ Public repos (lockstep tags):
 ## Pin to a tag
 
 Do not track `main`. Pin your fork to a release tag. Latest tag is
-`v1.0.7` (2026-09-29). Upgrade deliberately with the changelog in hand.
+`v1.1.0` (2026-10-04). Upgrade deliberately with the changelog in hand.
 
 ```bash
 git clone https://github.com/MIT-Consulting/maxwell-automations.git
 cd maxwell-automations
-git checkout v1.0.7
+git checkout v1.1.0
 ```
 
 Skills bundle: same tag on `maxwell-automations-skills`. Breaking skill changes
@@ -31,11 +31,25 @@ current release tag, the worktree is clean, and no run is active. It runs
 `npm ci`, `npm run build`, and checks `/health`. If the new version does not
 come up, it resets to `refs/max/update-backup` and rebuilds. It does not run
 on a factory checkout, and the dashboard has no apply button. Read the
-changelog before you pass `--apply`. `--dry-run` prints the plan and stops.
+changelog before you pass `--apply`.
+
+Both `--apply` and `--dry-run` fetch the exact target tag into
+`refs/max/update-target` first (network and auth may be required), read that
+tag's `package.json` and `CHANGELOG.md`, print the target Node requirement and
+a fixed **Upgrade actions** block, then decide whether mutation may proceed.
+`--dry-run` never stops the daemon, moves HEAD, runs `npm ci`, or builds; it
+only updates the private fetch ref and prints the plan. Apply does not install
+Node — install a supported version locally when the target floor is unmet.
+
+Root `.npmrc` ships with **`engine-strict=true`** on public exports, so `npm ci`
+refuses unsupported Node before dependencies install. Each release changelog
+section includes **`### Upgrade actions`** (`none` or bullet steps) — read that
+block between your pin and the target tag.
 
 ## Upgrade
 
-1. Read `CHANGELOG.md` between your pin and the target tag.
+1. Read `CHANGELOG.md` between your pin and the target tag (especially
+   **Upgrade actions** and any `engines.node` change).
 2. Fetch tags on the public remotes (or re-export is not your problem — you fork
    public, you do not merge from the private factory).
 3. Merge or rebase the new tag into your fork.
@@ -47,6 +61,11 @@ Divergence is expected. There is no obligation to stay mergeable forever.
 Tags keep upgrades *possible*.
 
 ## Skills
+
+Bundled skills: `implement-fully`, `plan-implement-fully`, and `max-setup`
+(setup/register/adopt router). After `max update --apply`, rerun
+`max skills install` when Upgrade actions say so — bare `max doctor` reports
+drift via `max skills install --check`.
 
 - Cursor: import `maxwell-automations-skills` as a plugin (GitHub-backed).
 - CLI: `max skills install` from a Max checkout.

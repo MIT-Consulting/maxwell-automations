@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ACTOR_ID_MAX_LENGTH, sanitizeActorId } from "../actor-id.js";
 import type { ChainRunContext, ChainVariables } from "../types/config.js";
 import {
   PIPELINE_WAVE_OPERATOR_ACTIONS,
@@ -168,6 +169,23 @@ export const chainControlSchema = z
     }
   });
 
+const optionalActorIdSchema = z
+  .string()
+  .optional()
+  .superRefine((value, ctx) => {
+    if (value === undefined) return;
+    if (sanitizeActorId(value) === undefined) {
+      ctx.addIssue({
+        code: "custom",
+        message: `actorId must be 1–${ACTOR_ID_MAX_LENGTH} printable characters`,
+        path: [],
+      });
+    }
+  })
+  .transform((value) =>
+    value === undefined ? undefined : sanitizeActorId(value)
+  );
+
 /**
  * POST /api/runs/:id/escalate — operator retry / skip / abort on a halted
  * pipeline run. Optional reason shares the chain-control stop-reason bound.
@@ -181,6 +199,7 @@ export const runEscalationSchema = z
       .min(1)
       .max(CHAIN_STOP_REASON_MAX_LENGTH)
       .optional(),
+    actorId: optionalActorIdSchema,
     roleModels: chainRoleModelsSchema.optional(),
   })
   .superRefine((value, ctx) => {
@@ -469,4 +488,5 @@ export const inputAnswerSchema = z
  */
 export const answerRunInputSchema = z.strictObject({
   answer: inputAnswerSchema,
+  actorId: optionalActorIdSchema,
 });

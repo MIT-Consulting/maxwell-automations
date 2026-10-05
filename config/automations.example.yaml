@@ -19,16 +19,32 @@ settings:
   # copying this file does not silently arm an expensive prelude or exit model.
   # Named profiles: see docs/configuration.md (pipelineRoleModelProfiles).
   # pipelineRoleModels:
-  #   planner: grok-4.5
-  #   implementer: composer-2.5
-  #   reviewer:
-  #     id: claude-4.6-sonnet-medium-thinking
+  #   planner:
+  #     id: grok-4.6
   #     params:
-  #       - id: reasoning
+  #       - id: effort
   #         value: high
-  #   docs: composer-2.5
-  #   # researcher: grok-4.5   # omit = no research prelude
-  #   # gatekeeper: grok-4.5  # omit = final-gate falls back to reviewer
+  #       - id: fast
+  #         value: "false"      # plan/review are decision work: speed variant off
+  #   implementer:
+  #     id: composer-2.5
+  #     params:
+  #       - id: fast
+  #         value: "true"
+  #   reviewer:
+  #     id: grok-4.6
+  #     params:
+  #       - id: effort
+  #         value: high
+  #       - id: fast
+  #         value: "false"
+  #   docs:
+  #     id: composer-2.5
+  #     params:
+  #       - id: fast
+  #         value: "true"
+  #   # researcher: claude-fable-5-1   # omit = no research prelude
+  #   # gatekeeper: claude-opus-5-5    # omit = final-gate falls back to reviewer
 
 automations:
   # Linear chain example: plan → implement → review.
@@ -41,12 +57,14 @@ automations:
     enabled: true
     trigger:
       type: manual
-    # Structured selection (id + params). Scalar `model: grok-4.5` still works.
+    # Structured selection (id + params). Scalar `model: grok-4.6` still works.
     model:
-      id: grok-4.5
+      id: grok-4.6
       params:
-        - id: reasoning
+        - id: effort
           value: high
+        - id: fast
+          value: "false"
     prompt: |
       Use /plan-for-speed-model-fully to plan the next feature phase.
       Output a speed-model-ready phase doc under docs/roadmap/.

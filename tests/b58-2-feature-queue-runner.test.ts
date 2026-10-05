@@ -8,6 +8,7 @@ import {
   featureQueueFailureDetail,
   IMPLEMENT_FULLY_ENTRY_WORKER_KEY,
   IMPLEMENT_FULLY_FINAL_GATE_WORKER_KEY,
+  type FeatureQueueLineageRun,
 } from "@lca/shared";
 import {
   GENERATED_CONFIG_KEY_PREFIX,
@@ -32,6 +33,18 @@ import { RunStore } from "../packages/daemon/src/runs/store.ts";
 type Db = ReturnType<typeof openDatabase>;
 
 const TERMINAL_KEY = IMPLEMENT_FULLY_TERMINAL_CONFIG_KEY;
+
+function lineageRun(
+  partial: Partial<FeatureQueueLineageRun> &
+    Pick<FeatureQueueLineageRun, "configKey" | "status">
+): FeatureQueueLineageRun {
+  return {
+    chainStopRequestedAt: null,
+    chainStopReason: null,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    ...partial,
+  };
+}
 
 function until(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -174,42 +187,234 @@ async function createHarness(options?: { failFirstTrigger?: boolean }) {
 }
 
 describe("b58.2 feature queue runner", () => {
-  it("classifies done only when the terminal worker completed", () => {
-    expect(
-      classifyFeatureQueueOutcome(
-        [{ configKey: TERMINAL_KEY, status: "completed" }],
-        TERMINAL_KEY
-      )
-    ).toBe("done");
+  it("classifies lineage outcomes with green-aware final-gate semantics", () => {
+    const implementKey = `${GENERATED_CONFIG_KEY_PREFIX}implement`;
+
     expect(classifyFeatureQueueOutcome([], TERMINAL_KEY)).toBe("running");
-    expect(
-      classifyFeatureQueueOutcome(
-        [{ configKey: TERMINAL_KEY, status: "failed" }],
-        TERMINAL_KEY
-      )
-    ).toBe("failed");
+
     expect(
       classifyFeatureQueueOutcome(
         [
-          {
-            configKey: `${GENERATED_CONFIG_KEY_PREFIX}implement`,
-            status: "completed",
-          },
+          lineageRun({
+            configKey: implementKey,
+            status: "running",
+          }),
         ],
         TERMINAL_KEY
       )
     ).toBe("running");
+
     expect(
-      featureQueueFailureDetail(
+      classifyFeatureQueueOutcome(
         [
-          {
-            configKey: `${GENERATED_CONFIG_KEY_PREFIX}implement`,
-            status: "failed",
-          },
+          lineageRun({
+            configKey: TERMINAL_KEY,
+            status: "completed",
+            chainStopReason: "complete: all phases done",
+          }),
         ],
         TERMINAL_KEY
       )
+    ).toBe("done");
+
+    expect(
+      classifyFeatureQueueOutcome(
+        [lineageRun({ configKey: TERMINAL_KEY, status: "completed" })],
+        TERMINAL_KEY
+      )
+    ).toBe("failed");
+    expect(
+      featureQueueFailureDetail(
+        [lineageRun({ configKey: TERMINAL_KEY, status: "completed" })],
+        TERMINAL_KEY
+      )
+    ).toContain("missing explicit complete");
+
+    expect(
+      classifyFeatureQueueOutcome(
+        [
+          lineageRun({
+            configKey: TERMINAL_KEY,
+            status: "completed",
+            chainStopReason: "blocked: tracker incomplete",
+          }),
+        ],
+        TERMINAL_KEY
+      )
+    ).toBe("failed");
+    expect(
+      featureQueueFailureDetail(
+        [
+          lineageRun({
+            configKey: TERMINAL_KEY,
+            status: "completed",
+            chainStopReason: "blocked: tracker incomplete",
+          }),
+        ],
+        TERMINAL_KEY
+      )
+    ).toContain("final-gate blocked:");
+
+    expect(
+      classifyFeatureQueueOutcome(
+        [
+          lineageRun({
+            configKey: TERMINAL_KEY,
+            status: "completed",
+            chainStopReason: "deadlock: circular dependency",
+          }),
+        ],
+        TERMINAL_KEY
+      )
+    ).toBe("failed");
+    expect(
+      featureQueueFailureDetail(
+        [
+          lineageRun({
+            configKey: TERMINAL_KEY,
+            status: "completed",
+            chainStopReason: "deadlock: circular dependency",
+          }),
+        ],
+        TERMINAL_KEY
+      )
+    ).toContain("deadlock:");
+
+    expect(
+      classifyFeatureQueueOutcome(
+        [
+          lineageRun({
+            configKey: TERMINAL_KEY,
+            status: "completed",
+            chainStopReason: "mystery: unrecognised stop",
+          }),
+        ],
+        TERMINAL_KEY
+      )
+    ).toBe("failed");
+    expect(
+      featureQueueFailureDetail(
+        [
+          lineageRun({
+            configKey: TERMINAL_KEY,
+            status: "completed",
+            chainStopReason: "mystery: unrecognised stop",
+          }),
+        ],
+        TERMINAL_KEY
+      )
+    ).toContain("missing explicit complete");
+
+    expect(
+      classifyFeatureQueueOutcome(
+        [lineageRun({ configKey: TERMINAL_KEY, status: "failed" })],
+        TERMINAL_KEY
+      )
+    ).toBe("failed");
+
+    expect(
+      classifyFeatureQueueOutcome(
+        [lineageRun({ configKey: implementKey, status: "failed" })],
+        TERMINAL_KEY
+      )
+    ).toBe("failed");
+    expect(
+      featureQueueFailureDetail(
+        [lineageRun({ configKey: implementKey, status: "failed" })],
+        TERMINAL_KEY
+      )
     ).toContain("failed");
+
+    expect(
+      classifyFeatureQueueOutcome(
+        [lineageRun({ configKey: implementKey, status: "cancelled" })],
+        TERMINAL_KEY
+      )
+    ).toBe("failed");
+    expect(
+      featureQueueFailureDetail(
+        [lineageRun({ configKey: implementKey, status: "cancelled" })],
+        TERMINAL_KEY
+      )
+    ).toContain("cancelled");
+
+    expect(
+      classifyFeatureQueueOutcome(
+        [lineageRun({ configKey: implementKey, status: "completed" })],
+        TERMINAL_KEY
+      )
+    ).toBe("running");
+
+    expect(
+      classifyFeatureQueueOutcome(
+        [
+          lineageRun({
+            configKey: implementKey,
+            status: "completed",
+            chainStopRequestedAt: "2026-01-01T00:00:01.000Z",
+            chainStopReason: "complete: handoff ready",
+            createdAt: "2026-01-01T00:00:01.000Z",
+          }),
+        ],
+        TERMINAL_KEY
+      )
+    ).toBe("running");
+
+    expect(
+      classifyFeatureQueueOutcome(
+        [
+          lineageRun({
+            configKey: implementKey,
+            status: "completed",
+            chainStopRequestedAt: "2026-01-01T00:00:01.000Z",
+            chainStopReason: "blocked: halted mid-pipeline",
+            createdAt: "2026-01-01T00:00:01.000Z",
+          }),
+        ],
+        TERMINAL_KEY
+      )
+    ).toBe("failed");
+    expect(
+      featureQueueFailureDetail(
+        [
+          lineageRun({
+            configKey: implementKey,
+            status: "completed",
+            chainStopRequestedAt: "2026-01-01T00:00:01.000Z",
+            chainStopReason: "blocked: halted mid-pipeline",
+          }),
+        ],
+        TERMINAL_KEY
+      )
+    ).toContain("halted:");
+
+    expect(
+      classifyFeatureQueueOutcome(
+        [
+          lineageRun({
+            configKey: implementKey,
+            status: "completed",
+            chainStopRequestedAt: "2026-01-01T00:00:01.000Z",
+            chainStopReason: "aborted: operator abort",
+            createdAt: "2026-01-01T00:00:01.000Z",
+          }),
+        ],
+        TERMINAL_KEY
+      )
+    ).toBe("failed");
+    expect(
+      featureQueueFailureDetail(
+        [
+          lineageRun({
+            configKey: implementKey,
+            status: "completed",
+            chainStopRequestedAt: "2026-01-01T00:00:01.000Z",
+            chainStopReason: "aborted: operator abort",
+          }),
+        ],
+        TERMINAL_KEY
+      )
+    ).toContain("halted:");
   });
 
   it("blocks tryStartNext while a pipeline worker run is active", async () => {
@@ -385,6 +590,12 @@ describe("b58.2 feature queue runner", () => {
         status: "completed",
         chainRootRunId: rootRunId,
       });
+      h.db
+        .prepare(
+          `UPDATE runs SET chain_stop_requested_at = datetime('now'),
+             chain_stop_reason = ? WHERE id = ?`
+        )
+        .run("complete: stale resume", "terminal-done");
       h.db.prepare(
         `UPDATE feature_queue_entries SET state = 'running', run_id = ? WHERE id = ?`
       ).run(rootRunId, a.id);
@@ -442,6 +653,12 @@ describe("b58.2 feature queue runner", () => {
         status: "completed",
         chainRootRunId: rootRunId,
       });
+      h.db
+        .prepare(
+          `UPDATE runs SET chain_stop_requested_at = datetime('now'),
+             chain_stop_reason = ? WHERE id = ?`
+        )
+        .run("complete: green final gate", terminalId);
       h.events.emitRunStatus(terminalId, "completed");
       await until(() => h.queueStore.getEntry(a.id)?.state === "done");
       await until(() => h.queueStore.getEntry(b.id)?.state === "running");
