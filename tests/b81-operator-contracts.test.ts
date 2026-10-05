@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -195,7 +195,9 @@ describe("b81 operator documentation contracts", () => {
   const config = readDoc(CONFIG_DOC);
   const protocol = readDoc(PROTOCOL_DOC);
   const troubleshooting = readDoc(TROUBLESHOOTING_DOC);
-  const b80 = readDoc(B80_DOC);
+  // docs/roadmap/ is private and not exported; skip the b80 assertions on the
+  // public snapshot instead of failing CI there.
+  const b80 = existsSync(B80_DOC) ? readDoc(B80_DOC) : null;
   const lcaDev = readDoc(LCA_DEV_SKILL);
 
   it("configuration documents watch, exit codes, actor, and steering", () => {
@@ -234,10 +236,13 @@ describe("b81 operator documentation contracts", () => {
     expect(troubleshooting).toMatch(/Prefer CLI[\s\S]*SQLite/);
   });
 
-  it("b80 playbooks and lca-dev point at watch outcome without claiming b80 runtime", () => {
+  it.skipIf(b80 === null)("b80 playbooks point at watch outcome without claiming b80 runtime", () => {
     expect(b80).toContain("outcome: green");
     expect(b80).toContain("max watch");
     expect(b80).toMatch(/Status:\*\* Planned/);
+  });
+
+  it("lca-dev points at watch outcome without claiming b80 runtime", () => {
     expect(lcaDev).toContain("max watch");
     expect(lcaDev).toContain("max pipeline-stop");
     expect(lcaDev).toContain("outcome: green");

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -6,14 +6,19 @@ import {
   RoadmapTrackerError,
 } from "@lca/shared";
 
-const B77_TRACKER = readFileSync(
-  join(process.cwd(), "docs/roadmap/done/b77-backlog-feature-id-format/00-index.md"),
-  "utf8"
+// docs/roadmap/ is private and not exported; the live-tracker test is skipped
+// on the public snapshot.
+const B77_TRACKER_PATH = join(
+  process.cwd(),
+  "docs/roadmap/done/b77-backlog-feature-id-format/00-index.md"
 );
+const B77_TRACKER = existsSync(B77_TRACKER_PATH)
+  ? readFileSync(B77_TRACKER_PATH, "utf8")
+  : null;
 
 describe("parseRoadmapTracker", () => {
-  it("parses the b77 five-column tracker including Done status", () => {
-    const parsed = parseRoadmapTracker(B77_TRACKER);
+  it.skipIf(B77_TRACKER === null)("parses the b77 five-column tracker including Done status", () => {
+    const parsed = parseRoadmapTracker(B77_TRACKER!);
     expect(parsed.phases.length).toBeGreaterThanOrEqual(3);
     expect(parsed.phases.some((p) => p.status === "Done")).toBe(true);
     expect(parsed.nextExecutable).toBeNull();

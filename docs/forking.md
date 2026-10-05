@@ -11,12 +11,12 @@ Public repos (lockstep tags):
 ## Pin to a tag
 
 Do not track `main`. Pin your fork to a release tag. Latest tag is
-`v1.1.0` (2026-10-04). Upgrade deliberately with the changelog in hand.
+`v1.1.1` (2026-10-04). Upgrade deliberately with the changelog in hand.
 
 ```bash
 git clone https://github.com/MIT-Consulting/maxwell-automations.git
 cd maxwell-automations
-git checkout v1.1.0
+git checkout v1.1.1
 ```
 
 Skills bundle: same tag on `maxwell-automations-skills`. Breaking skill changes

@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -13,6 +13,12 @@ import {
 } from "../packages/daemon/src/roadmap/readiness.ts";
 
 const GATHER_BOUNDS = { maxBytes: 10_000_000, maxEntries: 10_000 };
+
+// docs/roadmap/ is private and not exported; the self-repository check below
+// is skipped on the public snapshot.
+const HAS_REPO_INDEX = existsSync(
+  join(process.cwd(), ROADMAP_DIR, "00-index.md")
+);
 
 function baseInputs(
   overrides: Partial<RoadmapReadinessInputs> = {}
@@ -194,7 +200,7 @@ describe("b90 readiness candidate rules", () => {
     );
   });
 
-  it("gather+analyze on this repository is ready with zero findings (e)", () => {
+  it.skipIf(!HAS_REPO_INDEX)("gather+analyze on this repository is ready with zero findings (e)", () => {
     const report = analyzeWorkspaceRoadmapReadiness(process.cwd(), GATHER_BOUNDS);
     expect(report.state).toBe("ready");
     expect(report.findings).toEqual([]);

@@ -12,6 +12,16 @@ and version numbers follow [SemVer](https://semver.org/).
 
 - none
 
+## [1.1.1] - 2026-10-04
+
+### Fixed
+
+- Public CI: six test files added in 1.1.0 read the private `docs/roadmap/` tree (self-index parity, live b77 tracker, b80 playbook contracts) and the `deep-fast` recipe example that 1.1.0 removed. Those assertions now skip when the private docs are absent and the architect example points at the `quality` recipe. No runtime change.
+
+### Upgrade actions
+
+- none
+
 ## [1.1.0] - 2026-10-04
 
 ### Added

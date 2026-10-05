@@ -85,13 +85,14 @@ describe("b59.3 plan-implement-fully skill AD6 and Review Gate", () => {
 });
 
 describe("b59.3 operator docs for optional architect", () => {
-  it("documents deep-fast example and role semantics", () => {
+  it("documents an architect-seated recipe and role semantics", () => {
     const config = readFileSync(CONFIG_PATH, "utf8");
 
-    expect(config).toMatch(/deep-fast:/);
-    expect(config).toMatch(/architect: gpt-5\.6-sol/);
-    expect(config).toMatch(/planner:[\s\S]*grok-4\.5/);
-    expect(config).toMatch(/implementer: composer-2\.5/);
+    // The `quality` recipe is the documented architect example: Sol seats
+    // `architect`, Grok plans, Composer implements.
+    expect(config).toMatch(/quality:\s*\n\s+architect:\s*\n\s+id: gpt-5\.6-sol/);
+    expect(config).toMatch(/planner:\s*\n\s+id: grok-4\.6/);
+    expect(config).toMatch(/implementer:\s*\n\s+id: composer-2\.5/);
 
     expect(config).toMatch(
       /\| `planner` \| yes \| Owns `plan-phase`\. Also covers `plan-skeleton` when `architect` is unset\. \|/

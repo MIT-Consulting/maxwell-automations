@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -11,10 +11,12 @@ import {
   sectionBody,
 } from "@lca/shared";
 
-const REPO_INDEX = readFileSync(
-  join(process.cwd(), "docs/roadmap/00-index.md"),
-  "utf8"
-);
+// docs/roadmap/ is private and not exported; the parity test below is skipped
+// on the public snapshot.
+const REPO_INDEX_PATH = join(process.cwd(), "docs/roadmap/00-index.md");
+const REPO_INDEX = existsSync(REPO_INDEX_PATH)
+  ? readFileSync(REPO_INDEX_PATH, "utf8")
+  : null;
 
 /** Legacy-only parser shape for parity against pre-migration behavior. */
 function legacyParseIndexEntries(markdown: string): Array<{
@@ -158,9 +160,9 @@ describe("parseRoadmapIndex", () => {
     expect(parseRoadmapIndex(markdown).formats.feature.source).toBe("default");
   });
 
-  it("matches legacy feature entries and order on the repository index", () => {
-    const legacy = legacyParseIndexEntries(REPO_INDEX);
-    const parsed = parseRoadmapIndex(REPO_INDEX);
+  it.skipIf(REPO_INDEX === null)("matches legacy feature entries and order on the repository index", () => {
+    const legacy = legacyParseIndexEntries(REPO_INDEX!);
+    const parsed = parseRoadmapIndex(REPO_INDEX!);
     const canonical = parsed.entries.map((e) => ({
       featureId: e.featureId,
       section: e.section,

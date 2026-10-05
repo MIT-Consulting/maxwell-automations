@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -10,10 +10,11 @@ import { gatherRoadmapReadinessInputs } from "../packages/daemon/src/roadmap/rea
 
 const GATHER_BOUNDS = { maxBytes: 10_000_000, maxEntries: 10_000 };
 
-const REPO_INDEX = readFileSync(
-  join(process.cwd(), "docs/roadmap/00-index.md"),
-  "utf8"
-);
+// docs/roadmap/ is private and not exported; the two self-index tests below
+// are skipped on the public snapshot.
+const REPO_INDEX_PATH = join(process.cwd(), "docs/roadmap/00-index.md");
+const HAS_REPO_INDEX = existsSync(REPO_INDEX_PATH);
+const REPO_INDEX = HAS_REPO_INDEX ? readFileSync(REPO_INDEX_PATH, "utf8") : null;
 
 const READY_INDEX = readFileSync(
   join(
@@ -53,7 +54,7 @@ function baseInputs(
 }
 
 describe("analyzeRoadmapReadiness", () => {
-  it("reports the repository own index as ready with zero findings", () => {
+  it.skipIf(!HAS_REPO_INDEX)("reports the repository own index as ready with zero findings", () => {
     const inputs = gatherRoadmapReadinessInputs(process.cwd(), GATHER_BOUNDS);
     const report = analyzeRoadmapReadiness(inputs);
     expect(report.state).toBe("ready");
@@ -61,10 +62,10 @@ describe("analyzeRoadmapReadiness", () => {
     expect(roadmapReadinessHasBlockers(report)).toBe(false);
   });
 
-  it("does not flag Agent Lookup or arc-order prose tables", () => {
+  it.skipIf(!HAS_REPO_INDEX)("does not flag Agent Lookup or arc-order prose tables", () => {
     const report = analyzeRoadmapReadiness(
       baseInputs({
-        indexMarkdown: REPO_INDEX,
+        indexMarkdown: REPO_INDEX!,
         roadmapChildren: listRepoRoadmapChildren(),
       })
     );
