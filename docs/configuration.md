@@ -100,11 +100,29 @@ active runs. Factory checkouts stay `0.0.0-dev` and are not told to move to a
 public tag. Details are in [Forking and upgrades](./forking.md).
 
 `max update --apply` and `--dry-run` fetch the target release tag into
-`refs/max/update-target` before any daemon stop or worktree change. They print
-the target `engines.node` requirement and the **Upgrade actions** subsection
-from that tag's changelog. Dry-run may move only that private ref; it does not
-stop the daemon, reset HEAD, install, or build. A target above this machine's
-Node floor is refused with `node-floor` before mutation.
+`refs/max/update-target` before any daemon stop or worktree change. When the
+local pin tag is missing, they also fetch that published tag into
+`refs/max/update-pin` and compare it to HEAD. They print the target
+`engines.node` requirement and the **Upgrade actions** subsection from that
+tag's changelog. Dry-run may move only those private refs; it does not stop
+the daemon, reset HEAD, install, or build. Apply removes every package `dist`
+and `*.tsbuildinfo` before building, so the result does not depend on what
+the previous checkout left behind. It then requires daemon, CLI, and dashboard
+stamps to match, installs bundled skills, checks `/health`, and records the
+local tag. A target above this machine's Node floor is refused with
+`node-floor` before mutation.
+
+`max update --from <file>` installs a test bundle on a public clone that is
+sitting on the release the bundle was cut from. The file is a git bundle. The
+first departure saves that release at `refs/max/stable`. A later bundle keeps
+the saved ref and records the tip at `refs/max/test-build`. `max update --stable`
+returns to the saved release through the same rebuild and records the release
+tag. While a test build is installed the update state is `test-build`:
+Settings → About shows a **Test build** badge, names the build and the return
+command, and does not offer an approved release. `max update --apply` refuses
+with `test-build` and says to run `max update --stable` first.
+`--from --dry-run` fetches the bundle and prints the plan. `--stable` performs
+the return.
 
 Root `.npmrc` sets **`engine-strict=true`**, so `npm ci` / `npm install` refuse
 when Node does not satisfy `package.json` `engines.node` (currently `>=22.13`

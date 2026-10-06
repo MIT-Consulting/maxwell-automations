@@ -12,6 +12,26 @@ and version numbers follow [SemVer](https://semver.org/).
 
 - none
 
+## [1.1.4] - 2026-10-05
+
+### Added
+
+- Test builds as files: `max update --from <file>` installs a test bundle on a public clone and saves the release it left; `max update --stable` returns to it. Settings → About shows a **Test build** badge with the way back, and `max update --apply` refuses on a test build with the same instruction. `scripts/make-test-bundle.mjs` cuts the bundle, and refuses a clone whose origin is GitHub so the test stamp is not committed in the repo that publishes.
+
+### Fixed
+
+- The dashboard is no longer built against the previous version's shared code. The root build ran packages alphabetically, so after `max update --apply` the dashboard bundled the old `@lca/shared`; on 1.1.3 that left the duplicate-row picker fix out of the browser.
+- `max update --apply` builds from empty `dist` folders, then fails and rolls back unless the daemon, CLI, and dashboard all report the new version and the dashboard was built from the shared code this build produced.
+- A successful `max update --apply` no longer breaks the next one. It records the local release tag, and when that tag is missing it compares HEAD with the published tag instead of refusing.
+- `max update --apply` installs the bundled skills, and restores them on rollback.
+- Open dashboard tabs reload themselves when the daemon comes back on a different version.
+- CLI refusals print as one `Error: …` line instead of a Node stack trace.
+
+### Upgrade actions
+
+- Reload any open dashboard tab once after this upgrade. The 1.1.3 dashboard does not reload itself, and the 1.1.3 updater does not gain that behavior on the hop into this release.
+- Windows installs still on 1.0.7 or earlier: `max update --apply` cannot make the hop. Move the pin by hand with `git checkout v1.1.4`, then `npm ci`, `npm run build`, `max skills install`, `max up`. From 1.1.0 onward, `--apply` works.
+
 ## [1.1.3] - 2026-10-05
 
 ### Fixed

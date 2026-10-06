@@ -1,13 +1,24 @@
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { fingerprintSharedDist as fingerprintSharedDistScript } from "../scripts/embed-version.mjs";
 import {
   applyPlanLines,
+  assessApplyStamps,
   assessUpdateApply,
+  cleanBuildOutputs,
   executeUpdateApply,
+  fetchPublishedPinSha,
+  fingerprintSharedDist,
   formatPreflightReport,
   preflightUpdateTarget,
+  readApplyStamps,
   releaseFetchUrl,
   type ApplyFacts,
+  type ApplyStampReport,
 } from "../packages/cli/src/update-apply.ts";
+import { dashboardReloadAction } from "../packages/dashboard/src/dashboardReload.ts";
 
 const pinned: ApplyFacts = {
   checkout: { version: "1.0.5", channel: "public" },
@@ -17,6 +28,19 @@ const pinned: ApplyFacts = {
   devMode: false,
   targetTag: "v1.0.6",
 };
+
+function matchingStamps(version = "1.0.6"): ApplyStampReport {
+  return {
+    daemonVersion: version,
+    cliVersion: version,
+    dashboardVersion: version,
+    daemonTestId: null,
+    cliTestId: null,
+    dashboardTestId: null,
+    dashboardSharedDistHash: "hash",
+    sharedDistHash: "hash",
+  };
+}
 
 const TARGET_MANIFEST = JSON.stringify({ engines: { node: ">=22.13" } });
 const TARGET_CHANGELOG = `## [1.0.6] - 2026-10-01
@@ -49,6 +73,13 @@ describe("b70 max update --apply", () => {
     expect(assessUpdateApply({ ...pinned, dirty: true })).toMatchObject({ code: "dirty" });
     expect(assessUpdateApply({ ...pinned, pinnedTags: [] })).toMatchObject({ code: "not-pinned" });
     expect(assessUpdateApply({ ...pinned, pinnedTags: ["v1.0.4"] })).toMatchObject({ code: "not-pinned" });
+    expect(
+      assessUpdateApply({
+        ...pinned,
+        publishedPinMatchesHead: false,
+        publishedPinError: "unused when the local tag matches",
+      }).ok
+    ).toBe(true);
     expect(assessUpdateApply({ ...pinned, activeRuns: 2 })).toMatchObject({ code: "active-runs" });
     expect(assessUpdateApply({ ...pinned, devMode: true })).toMatchObject({ code: "dev-mode" });
     expect(assessUpdateApply({ ...pinned, targetTag: "v1.0.5" })).toMatchObject({ code: "not-newer" });
@@ -238,10 +269,18 @@ describe("b70 max update --apply", () => {
           events.push("start");
         },
         healthVersion: async () => "1.0.6",
+        readStamps: () => matchingStamps(),
+        installSkills: () => {
+          events.push("skills");
+        },
+        cleanBuild: () => {
+          npmCalls.push(["<clean>"]);
+        },
         log: (line) => events.push(`log:${line}`),
       },
     });
 
+    expect(npmCalls.map((args) => args.join(" "))).toEqual(["ci", "<clean>", "run build"]);
     const fetchIndex = gitCalls.findIndex((args) =>
       args.some((part) => part.includes("refs/max/update-target"))
     );
@@ -253,6 +292,15 @@ describe("b70 max update --apply", () => {
       true
     );
     expect(npmCalls.some((args) => args[0] === "ci")).toBe(true);
+    const skillIndex = events.indexOf("skills");
+    const startIndex = events.indexOf("start");
+    expect(skillIndex).toBeGreaterThanOrEqual(0);
+    expect(startIndex).toBeGreaterThan(skillIndex);
+    expect(
+      gitCalls.some(
+        (args) => args[0] === "update-ref" && args[1] === "refs/tags/v1.0.6" && args[2] === "abc"
+      )
+    ).toBe(true);
   });
 
   it("rolls back when the new build does not report the target version", async () => {
@@ -282,10 +330,24 @@ describe("b70 max update --apply", () => {
             starts += 1;
           },
           healthVersion: async () => "1.0.5",
+          readStamps: () => matchingStamps(),
+          installSkills: () => {},
+          cleanBuild: () => {
+            npmCalls.push(["<clean>"]);
+          },
           log: () => {},
         },
       })
     ).rejects.toThrow(/expected 1\.0\.6/);
+
+    expect(npmCalls.map((args) => args.join(" "))).toEqual([
+      "ci",
+      "<clean>",
+      "run build",
+      "ci",
+      "<clean>",
+      "run build",
+    ]);
 
     expect(gitCalls.some((args) => args[0] === "update-ref" && args[1] === "refs/max/update-backup")).toBe(true);
     expect(gitCalls.some((args) => args[0] === "reset" && args[2] === "refs/max/update-target")).toBe(true);
@@ -293,6 +355,208 @@ describe("b70 max update --apply", () => {
     expect(npmCalls.filter((args) => args[0] === "ci").length).toBe(2);
     expect(starts).toBe(2);
     expect(stops).toBe(2);
-    expect(applyPlanLines("MIT-Consulting/maxwell-automations", "v1.0.6")[0]).toMatch(/v1\.0\.6/);
+    expect(
+      gitCalls.some((args) => args[0] === "update-ref" && args[1] === "refs/tags/v1.0.6")
+    ).toBe(false);
+    const plan = applyPlanLines("MIT-Consulting/maxwell-automations", "v1.0.6");
+    expect(plan[0]).toMatch(/v1\.0\.6/);
+    expect(plan.some((line) => line.includes("dashboard stamps"))).toBe(true);
+    expect(plan.some((line) => line.includes("install bundled skills"))).toBe(true);
+    expect(plan.some((line) => line.includes("record the local release tag"))).toBe(true);
+  });
+
+  it("accepts a missing local tag when the published tag points at HEAD", () => {
+    const decision = assessUpdateApply({
+      ...pinned,
+      pinnedTags: [],
+      publishedPinMatchesHead: true,
+    });
+    expect(decision.ok).toBe(true);
+  });
+
+  it("names the published tag when HEAD is a different commit", () => {
+    const decision = assessUpdateApply({
+      ...pinned,
+      pinnedTags: [],
+      publishedPinError: "Published v1.0.5 is abcdefabcdef, HEAD is 123456789abc.",
+    });
+    expect(decision).toMatchObject({ code: "not-pinned" });
+    if (!decision.ok) {
+      expect(decision.message).toContain("published tag v1.0.5");
+      expect(decision.message).toContain("HEAD is 123456789abc");
+    }
+  });
+
+  it("fetches the published pin into refs/max/update-pin without writing other tags", () => {
+    const gitCalls: string[][] = [];
+    const sha = fetchPublishedPinSha({
+      fetchUrl: "https://github.com/MIT-Consulting/maxwell-automations.git",
+      pinTag: "v1.0.5",
+      git: (args) => {
+        gitCalls.push(args);
+        if (args[0] === "rev-parse") return "abc123";
+        return "";
+      },
+    });
+    expect(sha).toBe("abc123");
+    expect(gitCalls[0]?.[0]).toBe("fetch");
+    expect(gitCalls[0]).toContain("--no-tags");
+    expect(gitCalls[0]).toContain("refs/tags/v1.0.5:refs/max/update-pin");
+    expect(gitCalls[1]).toEqual(["rev-parse", "refs/max/update-pin"]);
+    const cliSrc = readFileSync(
+      join(import.meta.dirname, "../packages/cli/src/cli.ts"),
+      "utf8"
+    );
+    expect(cliSrc).toContain("fetchPublishedPinSha");
+    expect(cliSrc).toContain("readApplyStamps");
+    expect(cliSrc).toContain("installBundledSkills");
+  });
+
+  it("refuses a dashboard stamp that does not match the shared build it bundled", () => {
+    expect(
+      assessApplyStamps({
+        targetVersion: "1.0.6",
+        stamps: { ...matchingStamps(), sharedDistHash: "newer" },
+      })
+    ).toMatchObject({
+      ok: false,
+      message: expect.stringContaining("different shared build"),
+    });
+    expect(
+      assessApplyStamps({
+        targetVersion: "1.0.6",
+        stamps: { ...matchingStamps(), dashboardVersion: null },
+      })
+    ).toMatchObject({ ok: false, message: expect.stringContaining("dashboard") });
+    expect(assessApplyStamps({ targetVersion: "1.0.6", stamps: matchingStamps() })).toEqual({
+      ok: true,
+    });
+  });
+
+  it("rolls back without starting the new daemon when stamps disagree", async () => {
+    let starts = 0;
+    let skills = 0;
+    await expect(
+      executeUpdateApply({
+        root: "/repo",
+        targetTag: "v1.0.6",
+        targetVersion: "1.0.6",
+        wasRunning: true,
+        ops: {
+          git: (args) => (args[0] === "rev-parse" ? "abc" : ""),
+          npm: () => {},
+          stopDaemon: async () => {},
+          startDaemon: async () => {
+            starts += 1;
+          },
+          healthVersion: async () => "1.0.6",
+          readStamps: () => ({ ...matchingStamps(), dashboardVersion: "1.0.5" }),
+          installSkills: () => {
+            skills += 1;
+          },
+          cleanBuild: () => {},
+          log: () => {},
+        },
+      })
+    ).rejects.toThrow(/dashboard 1\.0\.5/);
+    expect(starts).toBe(1);
+    expect(skills).toBe(1);
+  });
+
+  it("rolls back when skills do not land in sync", async () => {
+    let skills = 0;
+    let starts = 0;
+    await expect(
+      executeUpdateApply({
+        root: "/repo",
+        targetTag: "v1.0.6",
+        targetVersion: "1.0.6",
+        wasRunning: true,
+        ops: {
+          git: (args) => (args[0] === "rev-parse" ? "abc" : ""),
+          npm: () => {},
+          stopDaemon: async () => {},
+          startDaemon: async () => {
+            starts += 1;
+          },
+          healthVersion: async () => "1.0.6",
+          readStamps: () => matchingStamps(),
+          installSkills: () => {
+            skills += 1;
+            if (skills === 1) throw new Error("skills install exited 1");
+          },
+          cleanBuild: () => {},
+          log: () => {},
+        },
+      })
+    ).rejects.toThrow(/skills install exited 1/);
+    expect(skills).toBe(2);
+    expect(starts).toBe(1);
+  });
+
+  it("reads component stamps and agrees with the embed script on a shared-dist fingerprint", () => {
+    const root = mkdtempSync(join(tmpdir(), "lca-stamps-"));
+    try {
+      const shared = join(root, "packages", "shared", "dist");
+      mkdirSync(join(shared, "nested"), { recursive: true });
+      writeFileSync(join(shared, "index.js"), "export {}\n");
+      writeFileSync(join(shared, "nested", "roadmap.js"), "export const id = 1;\n");
+      const stamp = {
+        version: "1.0.6",
+        channel: "public",
+        sharedDistHash: "from-dashboard",
+      };
+      for (const pkg of ["daemon", "cli", "dashboard"]) {
+        const dir = join(root, "packages", pkg, "dist");
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "version-embed.json"), `${JSON.stringify(stamp)}\n`);
+      }
+      const read = readApplyStamps(root);
+      expect(read.daemonVersion).toBe("1.0.6");
+      expect(read.cliVersion).toBe("1.0.6");
+      expect(read.dashboardVersion).toBe("1.0.6");
+      expect(read.dashboardSharedDistHash).toBe("from-dashboard");
+      expect(read.sharedDistHash).toBe(fingerprintSharedDist(shared));
+      expect(read.sharedDistHash).toBe(fingerprintSharedDistScript(shared));
+      expect(read.sharedDistHash).not.toBe("from-dashboard");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("removes package dist folders and tsbuildinfo before a build", () => {
+    const root = mkdtempSync(join(tmpdir(), "lca-clean-"));
+    try {
+      for (const pkg of ["shared", "dashboard"]) {
+        mkdirSync(join(root, "packages", pkg, "dist", "nested"), { recursive: true });
+        writeFileSync(join(root, "packages", pkg, "dist", "nested", "index.js"), "export {}\n");
+        writeFileSync(join(root, "packages", pkg, "package.json"), "{}\n");
+      }
+      writeFileSync(join(root, "packages", "shared", "tsconfig.tsbuildinfo"), "{}\n");
+      mkdirSync(join(root, "packages", "shared", "src"), { recursive: true });
+      writeFileSync(join(root, "packages", "shared", "src", "index.ts"), "export {}\n");
+
+      const removed = cleanBuildOutputs(root).sort();
+
+      expect(removed).toEqual([
+        "packages/dashboard/dist",
+        "packages/shared/dist",
+        "packages/shared/tsconfig.tsbuildinfo",
+      ]);
+      expect(existsSync(join(root, "packages", "shared", "dist"))).toBe(false);
+      expect(existsSync(join(root, "packages", "shared", "tsconfig.tsbuildinfo"))).toBe(false);
+      expect(existsSync(join(root, "packages", "shared", "src", "index.ts"))).toBe(true);
+      expect(existsSync(join(root, "packages", "shared", "package.json"))).toBe(true);
+      expect(cleanBuildOutputs(root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reloads an open dashboard only after the daemon version changes", () => {
+    expect(dashboardReloadAction(null, "1.0.6")).toBe("record");
+    expect(dashboardReloadAction(null, "")).toBe("stay");
+    expect(dashboardReloadAction("1.0.6", "1.0.6")).toBe("stay");
+    expect(dashboardReloadAction("1.0.6", "1.0.7")).toBe("reload");
   });
 });

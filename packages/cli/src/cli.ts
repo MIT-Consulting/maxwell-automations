@@ -4,7 +4,7 @@ import { stdin, stdout } from "node:process";
 import { execFileSync, execSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, parse as parsePath } from "node:path";
+import { dirname, join, parse as parsePath, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createReadStream, watch } from "node:fs";
 import type {
@@ -20,6 +20,8 @@ import {
   PIPELINE_MODEL_ROLES,
   RUN_ESCALATION_ACTIONS,
   formatUpdateSummary,
+  isFactoryIdentity,
+  parseIdentityJson,
   parseModelSelectionKey,
   resolveNodeFloorRequirement,
   type ModelSelection,
@@ -121,12 +123,21 @@ import {
   loadCliUpdateSettings,
 } from "./version.js";
 import {
+  STABLE_REF,
+  TEST_BUILD_REF,
   applyPlanLines,
+  assessManifestNodeFloor,
   assessUpdateApply,
+  assessUpdateFrom,
+  assessUpdateStable,
   executeUpdateApply,
+  fetchBundleTip,
+  fetchPublishedPinSha,
   formatPreflightReport,
   normalizeReleaseTag,
   preflightUpdateTarget,
+  readApplyStamps,
+  cleanBuildOutputs,
   releaseFetchUrl,
 } from "./update-apply.js";
 import { resolveRunId } from "./run-resolve.js";
@@ -1668,9 +1679,12 @@ async function cmdUpdateCheck(client: DaemonClient): Promise<void> {
   console.log(formatUpdateCheckReport(await checkUpdateLocally()));
 }
 
+const UPDATE_USAGE =
+  "Usage: max update check   |   max update --apply [--tag vX.Y.Z] [--dry-run]   |   max update --from <file> [--dry-run]   |   max update --stable";
+
 async function cmdUpdateApply(client: DaemonClient, rawArgs: string[]): Promise<void> {
-  if (rawArgs.includes("check")) {
-    throw new DaemonError("Usage: max update check   |   max update --apply [--tag vX.Y.Z] [--dry-run]");
+  if (rawArgs.includes("check") || rawArgs.includes("--from") || rawArgs.includes("--stable")) {
+    throw new DaemonError(UPDATE_USAGE);
   }
   const dryRun = rawArgs.includes("--dry-run");
   const tagFlag = rawArgs.indexOf("--tag");
@@ -1737,6 +1751,38 @@ async function cmdUpdateApply(client: DaemonClient, rawArgs: string[]): Promise<
     activeRuns = runs.filter((run) => ACTIVE_RUN_STATUSES.includes(run.status)).length;
   }
 
+  const fetchUrl = releaseFetchUrl(settings.repo, settings.host);
+  let publishedPinMatchesHead = false;
+  let publishedPinError: string | undefined;
+  const pinTag =
+    identity.checkout &&
+    !isFactoryIdentity(identity.checkout) &&
+    identity.checkout.channel !== "test"
+      ? `v${identity.checkout.version}`
+      : null;
+  if (pinTag && !pinnedTags.includes(pinTag)) {
+    if (!fetchUrl) {
+      publishedPinError = `Approved repo is not owner/name: ${settings.repo}`;
+    } else {
+      try {
+        const published = fetchPublishedPinSha({
+          fetchUrl,
+          pinTag,
+          token: settings.token,
+          git,
+        });
+        const headSha = git(["rev-parse", "HEAD"]);
+        publishedPinMatchesHead = published === headSha;
+        if (!publishedPinMatchesHead) {
+          publishedPinError = `Published ${pinTag} is ${published.slice(0, 12)}, HEAD is ${headSha.slice(0, 12)}.`;
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        publishedPinError = `Could not read published tag ${pinTag}: ${message}`;
+      }
+    }
+  }
+
   const decision = assessUpdateApply({
     checkout: identity.checkout,
     pinnedTags,
@@ -1744,12 +1790,13 @@ async function cmdUpdateApply(client: DaemonClient, rawArgs: string[]): Promise<
     activeRuns,
     devMode: live?.mode === "dev",
     targetTag,
+    publishedPinMatchesHead,
+    publishedPinError,
   });
   if (!decision.ok) {
     throw new DaemonError(decision.message);
   }
 
-  const fetchUrl = releaseFetchUrl(settings.repo, settings.host);
   if (!fetchUrl) {
     throw new DaemonError(`Approved repo is not owner/name: ${settings.repo}`);
   }
@@ -1793,40 +1840,327 @@ async function cmdUpdateApply(client: DaemonClient, rawArgs: string[]): Promise<
     targetTag: decision.targetTag,
     targetVersion: decision.targetVersion,
     wasRunning,
-    ops: {
-      git,
-      npm: (args) => {
-        const result = spawnSync(
-          npmBinFor(process.platform),
-          args,
-          npmSpawnSyncOptions(process.platform, {
-            cwd: root,
-            stdio: "inherit",
-            timeout: 600_000,
-          })
-        );
-        if (result.error) throw result.error;
-        if (result.status !== 0) {
-          throw new Error(`npm ${args.join(" ")} exited ${result.status ?? "signal"}`);
-        }
-      },
-      stopDaemon: async () => {
-        if (await daemonReachable(client)) {
-          await cmdDownProd(client, { forRestart: true });
-        }
-      },
-      startDaemon: async () => {
-        await cmdUpProd(client);
-      },
-      healthVersion: async () => {
-        const up = await waitForDaemon(client, "up", 30_000);
-        if (!up) throw new Error("Daemon did not become healthy.");
-        const health = await client.health();
-        return health.version;
-      },
-      log: (line) => console.log(line),
-    },
+    ops: updateApplyOps(root, client, git),
   });
+}
+
+function updateApplyOps(
+  root: string,
+  client: DaemonClient,
+  git: (args: string[]) => string
+) {
+  return {
+    git,
+    npm: (args: string[]) => {
+      const result = spawnSync(
+        npmBinFor(process.platform),
+        args,
+        npmSpawnSyncOptions(process.platform, {
+          cwd: root,
+          stdio: "inherit",
+          timeout: 600_000,
+        })
+      );
+      if (result.error) throw result.error;
+      if (result.status !== 0) {
+        throw new Error(`npm ${args.join(" ")} exited ${result.status ?? "signal"}`);
+      }
+    },
+    stopDaemon: async () => {
+      if (await daemonReachable(client)) {
+        await cmdDownProd(client, { forRestart: true });
+      }
+    },
+    startDaemon: async () => {
+      await cmdUpProd(client);
+    },
+    healthVersion: async () => {
+      const up = await waitForDaemon(client, "up", 30_000);
+      if (!up) throw new Error("Daemon did not become healthy.");
+      const health = await client.health();
+      return health.version;
+    },
+    readStamps: () => readApplyStamps(root),
+    installSkills: () => installBundledSkills(root),
+    cleanBuild: () => {
+      cleanBuildOutputs(root);
+    },
+    log: (line: string) => console.log(line),
+  };
+}
+
+async function readUpdateWorkspace(client: DaemonClient): Promise<{
+  root: string;
+  git: (args: string[]) => string;
+  checkout: NonNullable<ReturnType<typeof loadCliIdentity>["checkout"]> | null;
+  dirty: boolean;
+  activeRuns: number;
+  devMode: boolean;
+  pinnedTags: string[];
+  publishedPinMatchesHead: boolean;
+  publishedPinError?: string;
+  hasStableRef: boolean;
+}> {
+  const identity = loadCliIdentity();
+  const root = identity.checkoutRoot;
+  if (!root) {
+    throw new DaemonError("No version.json checkout found next to this CLI.");
+  }
+  const git = (args: string[]): string =>
+    execFileSync("git", ["-C", root, ...args], {
+      encoding: "utf8",
+      timeout: 120_000,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+
+  let pinnedTags: string[] = [];
+  let dirty = true;
+  let hasStableRef = false;
+  try {
+    dirty = git(["status", "--porcelain"]).length > 0;
+    pinnedTags = git(["tag", "--points-at", "HEAD"])
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    try {
+      git(["rev-parse", "--verify", "--quiet", STABLE_REF]);
+      hasStableRef = true;
+    } catch {
+      hasStableRef = false;
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new DaemonError(`Cannot read git state in ${root}: ${message}`);
+  }
+
+  const live = await readLiveStatus(client);
+  let activeRuns = 0;
+  if (live) {
+    const runs = await client.listRuns(500);
+    activeRuns = runs.filter((run) => ACTIVE_RUN_STATUSES.includes(run.status)).length;
+  }
+
+  let publishedPinMatchesHead = false;
+  let publishedPinError: string | undefined;
+  const settings = loadCliUpdateSettings();
+  const fetchUrl = releaseFetchUrl(settings.repo, settings.host);
+  const pinTag =
+    identity.checkout &&
+    !isFactoryIdentity(identity.checkout) &&
+    identity.checkout.channel !== "test"
+      ? `v${identity.checkout.version}`
+      : null;
+  if (pinTag && !pinnedTags.includes(pinTag)) {
+    if (!fetchUrl) {
+      publishedPinError = `Approved repo is not owner/name: ${settings.repo}`;
+    } else {
+      try {
+        const published = fetchPublishedPinSha({
+          fetchUrl,
+          pinTag,
+          token: settings.token,
+          git,
+        });
+        const headSha = git(["rev-parse", "HEAD"]);
+        publishedPinMatchesHead = published === headSha;
+        if (!publishedPinMatchesHead) {
+          publishedPinError = `Published ${pinTag} is ${published.slice(0, 12)}, HEAD is ${headSha.slice(0, 12)}.`;
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        publishedPinError = `Could not read published tag ${pinTag}: ${message}`;
+      }
+    }
+  }
+
+  return {
+    root,
+    git,
+    checkout: identity.checkout,
+    dirty,
+    activeRuns,
+    devMode: live?.mode === "dev",
+    pinnedTags,
+    publishedPinMatchesHead,
+    publishedPinError,
+    hasStableRef,
+  };
+}
+
+async function cmdUpdateFrom(client: DaemonClient, rawArgs: string[]): Promise<void> {
+  if (rawArgs.includes("--apply") || rawArgs.includes("--stable") || rawArgs.includes("--tag")) {
+    throw new DaemonError(UPDATE_USAGE);
+  }
+  const dryRun = rawArgs.includes("--dry-run");
+  const fromFlag = rawArgs.indexOf("--from");
+  const requested = rawArgs[fromFlag + 1];
+  if (!requested || requested.startsWith("--")) {
+    throw new DaemonError("Usage: max update --from <file> [--dry-run]");
+  }
+  const file = resolve(requested);
+  if (!existsSync(file)) {
+    throw new DaemonError(`Test bundle not found: ${requested}`);
+  }
+
+  const workspace = await readUpdateWorkspace(client);
+  const decision = assessUpdateFrom(workspace);
+  if (!decision.ok) throw new DaemonError(decision.message);
+
+  let tip = "";
+  try {
+    tip = fetchBundleTip({ bundlePath: file, git: workspace.git });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new DaemonError(`Could not fetch test bundle: ${message}`);
+  }
+
+  let identityText = "";
+  let manifestText = "";
+  try {
+    identityText = workspace.git(["show", "refs/max/update-target:version.json"]);
+    manifestText = workspace.git(["show", "refs/max/update-target:package.json"]);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new DaemonError(`Test bundle is missing version.json or package.json: ${message}`);
+  }
+  const identity = parseIdentityJson(identityText);
+  if (!identity || identity.channel !== "test" || !identity.testId || !identity.base) {
+    throw new DaemonError(
+      "Bundle version.json is not a test build. It needs channel test, base, and testId."
+    );
+  }
+  const floor = assessManifestNodeFloor({
+    label: `Test ${identity.testId}`,
+    manifestText,
+    runningNode: process.versions.node,
+  });
+  if (!floor.ok) throw new DaemonError(floor.message);
+  if (identity.base !== workspace.checkout?.version) {
+    throw new DaemonError(
+      `This test is based on ${identity.base}. This checkout is ${workspace.checkout?.version ?? "unknown"}.`
+    );
+  }
+
+  console.log(`Test ${identity.testId} on ${identity.base} (${tip.slice(0, 12)})`);
+  console.log(`  bundle ${file}`);
+  console.log(
+    decision.mode === "release"
+      ? `  save ${STABLE_REF} at the current release`
+      : `  keep the saved ${STABLE_REF}`
+  );
+  console.log("  npm ci");
+  console.log("  npm run build from empty dist folders");
+  console.log(`  require stamps to match ${identity.version} and test ${identity.testId}`);
+  console.log("  install bundled skills");
+  console.log("  start the daemon and require /health to report the test version");
+  console.log(`  record ${TEST_BUILD_REF}`);
+  console.log("  if any step fails, reset to the backup, rebuild, restore skills, and start again");
+  if (dryRun) {
+    console.log("Dry-run fetched the bundle into refs/max/update-target.");
+    console.log("The daemon was not stopped and the worktree was not moved.");
+    console.log("Not applied (--dry-run).");
+    return;
+  }
+
+  if (decision.mode === "release") {
+    const head = workspace.git(["rev-parse", "HEAD"]);
+    workspace.git(["update-ref", STABLE_REF, head]);
+  }
+  const wasRunning = await daemonReachable(client);
+  await executeUpdateApply({
+    root: workspace.root,
+    targetTag: `test-${identity.testId}`,
+    targetVersion: identity.version,
+    wasRunning,
+    recordRef: TEST_BUILD_REF,
+    expectedTestId: identity.testId,
+    ops: updateApplyOps(workspace.root, client, workspace.git),
+  });
+}
+
+async function cmdUpdateStable(client: DaemonClient, rawArgs: string[]): Promise<void> {
+  if (rawArgs.includes("--apply") || rawArgs.includes("--from") || rawArgs.includes("--dry-run")) {
+    throw new DaemonError(UPDATE_USAGE);
+  }
+  if (rawArgs.length > 1) throw new DaemonError(UPDATE_USAGE);
+
+  const workspace = await readUpdateWorkspace(client);
+  const decision = assessUpdateStable(workspace);
+  if (!decision.ok) throw new DaemonError(decision.message);
+
+  let identityText = "";
+  let manifestText = "";
+  try {
+    identityText = workspace.git(["show", `${STABLE_REF}:version.json`]);
+    manifestText = workspace.git(["show", `${STABLE_REF}:package.json`]);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new DaemonError(`Saved stable release is missing version.json or package.json: ${message}`);
+  }
+  const identity = parseIdentityJson(identityText);
+  if (!identity || identity.channel !== "public") {
+    throw new DaemonError("Saved stable release is not a public version.json.");
+  }
+  const floor = assessManifestNodeFloor({
+    label: `v${identity.version}`,
+    manifestText,
+    runningNode: process.versions.node,
+  });
+  if (!floor.ok) throw new DaemonError(floor.message);
+
+  const stableSha = workspace.git(["rev-parse", STABLE_REF]);
+  workspace.git(["update-ref", "refs/max/update-target", stableSha]);
+  console.log(`Return to v${identity.version} (${stableSha.slice(0, 12)})`);
+  console.log("  npm ci");
+  console.log("  npm run build from empty dist folders");
+  console.log(`  require stamps to match ${identity.version}`);
+  console.log("  install bundled skills");
+  console.log("  start the daemon and require /health to report the release");
+  console.log(`  record refs/tags/v${identity.version}`);
+
+  const wasRunning = await daemonReachable(client);
+  await executeUpdateApply({
+    root: workspace.root,
+    targetTag: `v${identity.version}`,
+    targetVersion: identity.version,
+    wasRunning,
+    recordRef: `refs/tags/v${identity.version}`,
+    ops: updateApplyOps(workspace.root, client, workspace.git),
+  });
+  try {
+    workspace.git(["update-ref", "-d", TEST_BUILD_REF]);
+  } catch {
+    /* The test ref is optional once the release is restored. */
+  }
+}
+
+function installBundledSkills(root: string): void {
+  const script = join(root, "scripts", "install-skill.mjs");
+  if (!existsSync(script)) {
+    throw new Error(`Skill installer not found at ${script}`);
+  }
+  const applied = spawnSync(process.execPath, [script], {
+    cwd: root,
+    stdio: "inherit",
+    windowsHide: true,
+    timeout: 120_000,
+  });
+  if (applied.error) throw applied.error;
+  if (applied.status !== 0) {
+    throw new Error(`skills install exited ${applied.status ?? "signal"}`);
+  }
+  const check = spawnSync(process.execPath, [script, "--check"], {
+    cwd: root,
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 120_000,
+  });
+  if (check.error) throw check.error;
+  const combined = `${check.stdout ?? ""}${check.stderr ?? ""}`;
+  if (check.status !== 0 || !combined.includes("In sync.")) {
+    throw new Error("Skills are not in sync after install.");
+  }
 }
 
 async function cmdStatus(client: DaemonClient): Promise<void> {
@@ -2539,6 +2873,9 @@ Usage:
   max update --apply [--tag vX.Y.Z] [--dry-run]
                                  Fetch/inspect the target tag, then move a clean pin
                                  (--dry-run updates refs/max/update-target only)
+  max update --from <file> [--dry-run]
+                                 Install a test bundle on a public clone
+  max update --stable            Return to the release saved before --from
   max logs --daemon [-f]         Tail daemon or dev rig log (-f to follow)
   max list [--workspace, -w <id|name|path>]
                                  Show automations and recent run states
@@ -2674,10 +3011,16 @@ export async function main(): Promise<void> {
         await cmdUpdateApply(client, rest);
         return;
       }
+      if (rest.includes("--from")) {
+        await cmdUpdateFrom(client, rest);
+        return;
+      }
+      if (rest.includes("--stable")) {
+        await cmdUpdateStable(client, rest);
+        return;
+      }
       if (rest[0] !== "check") {
-        throw new DaemonError(
-          "Usage: max update check   |   max update --apply [--tag vX.Y.Z] [--dry-run]"
-        );
+        throw new DaemonError(UPDATE_USAGE);
       }
       await cmdUpdateCheck(client);
       return;

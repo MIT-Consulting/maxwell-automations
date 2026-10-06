@@ -10,7 +10,7 @@
     "node": ">=22.13"
   },
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
+    "build": "npm run build -w @lca/shared && npm run build -w @lca/automations-io && npm run build -w @lca/daemon && npm run build -w @lca/cli && npm run build -w @lca/dashboard",
     "test": "node scripts/run-tests.mjs",
     "typecheck": "tsc -b",
     "daemon": "npm run start -w @lca/daemon",

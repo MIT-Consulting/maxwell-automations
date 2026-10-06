@@ -82,7 +82,7 @@ max doctor <path> --json   # readiness loop (fixable_by); exit 0 = ready
 Fresh Cursor chats in this checkout should read [AGENTS.md](./AGENTS.md) first,
 then invoke the **`max-setup`** skill for setup, upgrade, and adoption.
 
-Check skill drift anytime: `max skills install --check` (rerun install after upgrades).
+Check skill drift anytime: `max skills install --check`. `max update --apply` installs skills for the version it lands on.
 
 ### CLI (`max`, alias `lca`)
 
@@ -100,6 +100,8 @@ max roadmap init [dir]   # scaffold docs/roadmap/00-index.md when empty
 max roadmap fix [workspace] [--yes]   # additive index repairs
 max update check         # approved release + Upgrade actions
 max update --apply --dry-run   # inspect apply plan without stopping daemon
+max update --from <file> [--dry-run]   # install a test bundle on a public clone
+max update --stable                     # return to the release saved by --from
 max skills install [--check|--dry-run]   # sync bundled skills to ~/.cursor/skills/
 max enable <id|name>     # arm an automation (disable to disarm)
 max run <id|name>        # trigger a run; prompts inline if it asks for input

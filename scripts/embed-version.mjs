@@ -8,8 +8,9 @@
  * build time. An already-running process keeps its previous embed.
  */
 
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -18,7 +19,40 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const TARGETS = {
   daemon: join(REPO_ROOT, "packages", "daemon", "dist"),
   cli: join(REPO_ROOT, "packages", "cli", "dist"),
+  dashboard: join(REPO_ROOT, "packages", "dashboard", "dist"),
 };
+
+/**
+ * Fingerprint of every file under a shared `dist` directory.
+ * Keep in lockstep with `fingerprintSharedDist` in `packages/cli/src/update-apply.ts`.
+ * Returns null when the directory is absent.
+ * @param {string} rootDir
+ * @returns {string | null}
+ */
+export function fingerprintSharedDist(rootDir) {
+  if (!existsSync(rootDir)) return null;
+  /** @type {string[]} */
+  const files = [];
+  const walk = (dir, prefix) => {
+    for (const name of readdirSync(dir)) {
+      const full = join(dir, name);
+      const rel = prefix ? `${prefix}/${name}` : name;
+      const info = statSync(full);
+      if (info.isDirectory()) walk(full, rel);
+      else if (info.isFile()) files.push(rel);
+    }
+  };
+  walk(rootDir, "");
+  files.sort();
+  const hash = createHash("sha256");
+  for (const rel of files) {
+    hash.update(rel);
+    hash.update("\0");
+    hash.update(readFileSync(join(rootDir, ...rel.split("/"))));
+    hash.update("\0");
+  }
+  return hash.digest("hex");
+}
 
 function git(args) {
   try {
@@ -56,11 +90,17 @@ function readStamp() {
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8"));
     if (parsed && typeof parsed.version === "string" && parsed.version.trim()) {
+      const version = parsed.version.trim();
       const channel =
-        parsed.channel === "public" || parsed.channel === "factory"
+        parsed.channel === "public" || parsed.channel === "factory" || parsed.channel === "test"
           ? parsed.channel
           : "unknown";
-      return { version: parsed.version.trim(), channel };
+      const stamp = { version, channel };
+      if (channel === "test") {
+        stamp.base = typeof parsed.base === "string" ? parsed.base.trim() : null;
+        stamp.testId = typeof parsed.testId === "string" ? parsed.testId.trim() : null;
+      }
+      return stamp;
     }
   } catch {
     /* factory fallback */
@@ -75,6 +115,7 @@ export function buildEmbed() {
   return {
     version: stamp.version,
     channel: stamp.channel,
+    ...(stamp.channel === "test" ? { base: stamp.base ?? null, testId: stamp.testId ?? null } : {}),
     commit: git(["rev-parse", "--short", "HEAD"]),
     dirty: typeof porcelain === "string" && porcelain.length > 0,
     describe,
@@ -88,7 +129,7 @@ function selectedPackages(argv) {
     if (argv[i] === "--package") {
       const name = argv[++i];
       if (!name || !TARGETS[name]) {
-        throw new Error("--package must be daemon or cli");
+        throw new Error("--package must be daemon, cli, or dashboard");
       }
       names.push(name);
     } else {
@@ -100,11 +141,18 @@ function selectedPackages(argv) {
 
 function writeEmbeds(packages) {
   const embed = buildEmbed();
-  const text = `${JSON.stringify(embed, null, 2)}\n`;
   const written = [];
   for (const name of packages) {
     const dir = TARGETS[name];
     if (!existsSync(dir)) continue;
+    const body =
+      name === "dashboard"
+        ? {
+            ...embed,
+            sharedDistHash: fingerprintSharedDist(join(REPO_ROOT, "packages", "shared", "dist")),
+          }
+        : embed;
+    const text = `${JSON.stringify(body, null, 2)}\n`;
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "version-embed.json"), text, "utf8");
     written.push(name);

@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { join } from "node:path";
 import {
   compareSemver,
   extractUpgradeActions,
@@ -20,7 +23,8 @@ export type ApplyRefusal =
   | "bad-tag"
   | "not-newer"
   | "node-floor"
-  | "malformed-target";
+  | "malformed-target"
+  | "test-build";
 
 export type ApplyFacts = {
   checkout: VersionIdentity | null;
@@ -31,6 +35,13 @@ export type ApplyFacts = {
   devMode: boolean;
   /** `vX.Y.Z` */
   targetTag: string;
+  /**
+   * True when the published `v{checkout.version}` tag points at HEAD.
+   * The CLI sets this when that tag is not in the local tag list.
+   */
+  publishedPinMatchesHead?: boolean;
+  /** Included in the not-pinned refusal when the published tag could not be confirmed. */
+  publishedPinError?: string;
 };
 
 export type ApplyDecision =
@@ -88,6 +99,15 @@ export function assessUpdateApply(facts: ApplyFacts): ApplyDecision {
     };
   }
 
+  if (facts.checkout.channel === "test") {
+    const base = facts.checkout.base ?? facts.checkout.version;
+    return {
+      ok: false,
+      code: "test-build",
+      message: `This checkout is test build ${facts.checkout.testId ?? "unknown"} on ${base}. Run max update --stable first, then max update --apply.`,
+    };
+  }
+
   if (facts.dirty) {
     return {
       ok: false,
@@ -96,13 +116,9 @@ export function assessUpdateApply(facts: ApplyFacts): ApplyDecision {
     };
   }
 
-  const pin = `v${facts.checkout.version}`;
-  if (!facts.pinnedTags.includes(pin)) {
-    return {
-      ok: false,
-      code: "not-pinned",
-      message: `HEAD is not the pinned tag ${pin}. Apply refuses local commits and detached commits that are not that tag.`,
-    };
+  const pinStatus = headIsPublishedRelease(facts);
+  if (!pinStatus.ok) {
+    return { ok: false, code: "not-pinned", message: pinStatus.message };
   }
 
   if (facts.activeRuns > 0) {
@@ -126,7 +142,7 @@ export function assessUpdateApply(facts: ApplyFacts): ApplyDecision {
     return {
       ok: false,
       code: "not-newer",
-      message: `Target ${targetTag} is not newer than the pinned checkout ${pin}.`,
+      message: `Target ${targetTag} is not newer than the pinned checkout ${pinStatus.pin}.`,
     };
   }
 
@@ -152,9 +168,12 @@ export function applyPlanLines(repo: string, targetTag: string): string[] {
     `  fetch ${targetTag}`,
     "  move this pin to that tag (no local commits to keep)",
     "  npm ci",
-    "  npm run build",
+    "  npm run build from empty dist folders",
+    "  require daemon, CLI, and dashboard stamps to match the new version",
+    "  install bundled skills",
     "  start the daemon and require /health to report the new version",
-    "  if health fails, reset to the backup, rebuild, and start again",
+    "  record the local release tag",
+    "  if any step fails, reset to the backup, rebuild, restore skills, and start again",
   ];
 }
 
@@ -167,14 +186,362 @@ export function formatPreflightReport(metadata: ApplyTargetMetadata): string[] {
   return lines;
 }
 
+export const STABLE_REF = "refs/max/stable";
+export const TEST_BUILD_REF = "refs/max/test-build";
+
+export type ApplyStampReport = {
+  daemonVersion: string | null;
+  cliVersion: string | null;
+  dashboardVersion: string | null;
+  daemonTestId: string | null;
+  cliTestId: string | null;
+  dashboardTestId: string | null;
+  /** Shared-dist fingerprint recorded when the dashboard build wrote its stamp. */
+  dashboardSharedDistHash: string | null;
+  /** Shared-dist fingerprint after the whole build finished. */
+  sharedDistHash: string | null;
+};
+
 export type ApplyOps = {
   git: (args: string[]) => string;
   npm: (args: string[]) => void;
   stopDaemon: () => Promise<void>;
   startDaemon: () => Promise<void>;
   healthVersion: () => Promise<string>;
+  /** Stamps written by this build, plus the shared dist as it sits now. */
+  readStamps: () => ApplyStampReport;
+  /** Copy bundled skills into the operator profile and require them to match. */
+  installSkills: () => void;
+  /** Remove build output and incremental state so the next build starts empty. */
+  cleanBuild: () => void;
   log: (line: string) => void;
 };
+
+/**
+ * Delete each workspace package's `dist` and `*.tsbuildinfo`. A buildinfo that
+ * outlives its `dist` makes `tsc` skip declaration emit, so the build would
+ * otherwise depend on whatever the previous checkout left behind.
+ * Returns the removed paths relative to `root`.
+ */
+export function cleanBuildOutputs(root: string): string[] {
+  const packagesDir = join(root, "packages");
+  if (!existsSync(packagesDir)) return [];
+  const removed: string[] = [];
+  for (const name of readdirSync(packagesDir)) {
+    const pkg = join(packagesDir, name);
+    if (!statSync(pkg).isDirectory()) continue;
+    const dist = join(pkg, "dist");
+    if (existsSync(dist)) {
+      rmSync(dist, { recursive: true, force: true });
+      removed.push(`packages/${name}/dist`);
+    }
+    for (const file of readdirSync(pkg)) {
+      if (!file.endsWith(".tsbuildinfo")) continue;
+      rmSync(join(pkg, file), { force: true });
+      removed.push(`packages/${name}/${file}`);
+    }
+  }
+  return removed;
+}
+
+/**
+ * Fingerprint of every file under a shared `dist` directory.
+ * Keep in lockstep with `fingerprintSharedDist` in `scripts/embed-version.mjs`.
+ * Returns null when the directory is absent.
+ */
+export function fingerprintSharedDist(rootDir: string): string | null {
+  if (!existsSync(rootDir)) return null;
+  const files: string[] = [];
+  const walk = (dir: string, prefix: string): void => {
+    for (const name of readdirSync(dir)) {
+      const full = join(dir, name);
+      const rel = prefix ? `${prefix}/${name}` : name;
+      const info = statSync(full);
+      if (info.isDirectory()) walk(full, rel);
+      else if (info.isFile()) files.push(rel);
+    }
+  };
+  walk(rootDir, "");
+  files.sort();
+  const hash = createHash("sha256");
+  for (const rel of files) {
+    hash.update(rel);
+    hash.update("\0");
+    hash.update(readFileSync(join(rootDir, ...rel.split("/"))));
+    hash.update("\0");
+  }
+  return hash.digest("hex");
+}
+
+function versionField(parsed: Record<string, unknown> | null): string | null {
+  if (!parsed || typeof parsed.version !== "string") return null;
+  const version = parsed.version.trim();
+  return version.length > 0 ? version : null;
+}
+
+function testIdField(parsed: Record<string, unknown> | null): string | null {
+  if (!parsed || typeof parsed.testId !== "string") return null;
+  const testId = parsed.testId.trim();
+  return testId.length > 0 ? testId : null;
+}
+
+export function readApplyStamps(root: string): ApplyStampReport {
+  const readJson = (rel: string): Record<string, unknown> | null => {
+    try {
+      return JSON.parse(readFileSync(join(root, rel), "utf8")) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  };
+  const dashboard = readJson("packages/dashboard/dist/version-embed.json");
+  const dashboardSharedDistHash =
+    dashboard && typeof dashboard.sharedDistHash === "string"
+      ? dashboard.sharedDistHash.trim() || null
+      : null;
+  const daemon = readJson("packages/daemon/dist/version-embed.json");
+  const cli = readJson("packages/cli/dist/version-embed.json");
+  return {
+    daemonVersion: versionField(daemon),
+    cliVersion: versionField(cli),
+    dashboardVersion: versionField(dashboard),
+    daemonTestId: testIdField(daemon),
+    cliTestId: testIdField(cli),
+    dashboardTestId: testIdField(dashboard),
+    dashboardSharedDistHash,
+    sharedDistHash: fingerprintSharedDist(join(root, "packages", "shared", "dist")),
+  };
+}
+
+export function assessApplyStamps(input: {
+  targetVersion: string;
+  stamps: ApplyStampReport;
+  /** When set, every component stamp must carry this test id. */
+  testId?: string | null;
+}): { ok: true } | { ok: false; message: string } {
+  const { stamps, targetVersion } = input;
+  const missing: string[] = [];
+  if (!stamps.daemonVersion) missing.push("daemon");
+  if (!stamps.cliVersion) missing.push("cli");
+  if (!stamps.dashboardVersion) missing.push("dashboard");
+  if (missing.length > 0) {
+    return { ok: false, message: `Build did not stamp ${missing.join(", ")}.` };
+  }
+  const wrong: string[] = [];
+  if (stamps.daemonVersion !== targetVersion) wrong.push(`daemon ${stamps.daemonVersion}`);
+  if (stamps.cliVersion !== targetVersion) wrong.push(`cli ${stamps.cliVersion}`);
+  if (stamps.dashboardVersion !== targetVersion) {
+    wrong.push(`dashboard ${stamps.dashboardVersion}`);
+  }
+  if (wrong.length > 0) {
+    return {
+      ok: false,
+      message: `Build stamps are ${wrong.join(", ")}; expected ${targetVersion}.`,
+    };
+  }
+  if (
+    !stamps.dashboardSharedDistHash ||
+    !stamps.sharedDistHash ||
+    stamps.dashboardSharedDistHash !== stamps.sharedDistHash
+  ) {
+    return {
+      ok: false,
+      message:
+        "Dashboard was built against a different shared build than the one this build produced.",
+    };
+  }
+  if (input.testId) {
+    const missing = (
+      [
+        ["daemon", stamps.daemonTestId],
+        ["cli", stamps.cliTestId],
+        ["dashboard", stamps.dashboardTestId],
+      ] as const
+    )
+      .filter(([, id]) => id !== input.testId)
+      .map(([name]) => name);
+    if (missing.length > 0) {
+      return {
+        ok: false,
+        message: `Build stamps are missing test ${input.testId} on ${missing.join(", ")}.`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
+/** Fetch `refs/tags/<pin>` into `refs/max/update-pin` and return that commit. */
+export function fetchPublishedPinSha(args: {
+  fetchUrl: string;
+  pinTag: string;
+  token?: string;
+  git: (args: string[]) => string;
+}): string {
+  const fetchArgs = [
+    "fetch",
+    "--no-tags",
+    args.fetchUrl,
+    `refs/tags/${args.pinTag}:refs/max/update-pin`,
+  ];
+  if (args.token) {
+    args.git(["-c", `http.extraheader=AUTHORIZATION: bearer ${args.token}`, ...fetchArgs]);
+  } else {
+    args.git(fetchArgs);
+  }
+  return args.git(["rev-parse", "refs/max/update-pin"]);
+}
+
+export type UpdateWorkspaceFacts = {
+  checkout: VersionIdentity | null;
+  pinnedTags: readonly string[];
+  publishedPinMatchesHead?: boolean;
+  publishedPinError?: string;
+  dirty: boolean;
+  activeRuns: number;
+  devMode: boolean;
+  hasStableRef: boolean;
+};
+
+function workspaceRefusal(
+  facts: Pick<UpdateWorkspaceFacts, "checkout" | "dirty" | "activeRuns" | "devMode">
+): ApplyDecision | null {
+  if (!facts.checkout || isFactoryIdentity(facts.checkout)) {
+    return {
+      ok: false,
+      code: "factory",
+      message:
+        "This checkout is the factory (0.0.0-dev). This command only moves a public clone.",
+    };
+  }
+  if (facts.dirty) {
+    return {
+      ok: false,
+      code: "dirty",
+      message: "Working tree is dirty. Commit or stash local edits before continuing.",
+    };
+  }
+  if (facts.activeRuns > 0) {
+    return {
+      ok: false,
+      code: "active-runs",
+      message: `${facts.activeRuns} run(s) are still active. Let them finish before continuing.`,
+    };
+  }
+  if (facts.devMode) {
+    return {
+      ok: false,
+      code: "dev-mode",
+      message: "The dev rig is running. Stop it before continuing.",
+    };
+  }
+  return null;
+}
+
+/** True when HEAD is the published release named by version.json. */
+export function headIsPublishedRelease(
+  facts: Pick<
+    ApplyFacts,
+    "checkout" | "pinnedTags" | "publishedPinMatchesHead" | "publishedPinError"
+  >
+): { ok: true; pin: string } | { ok: false; message: string } {
+  const pin = `v${facts.checkout?.version ?? ""}`;
+  if (facts.checkout && (facts.pinnedTags.includes(pin) || facts.publishedPinMatchesHead === true)) {
+    return { ok: true, pin };
+  }
+  const detail = facts.publishedPinError ? ` ${facts.publishedPinError}` : "";
+  return {
+    ok: false,
+    message: `HEAD is not the published tag ${pin}. Apply only moves a checkout sitting on that tag.${detail}`,
+  };
+}
+
+/**
+ * A file install may leave the published release, or replace a test build
+ * whose stable release was already saved.
+ */
+export function assessUpdateFrom(
+  facts: UpdateWorkspaceFacts
+): { ok: true; mode: "release" | "test" } | { ok: false; code: ApplyRefusal; message: string } {
+  const refused = workspaceRefusal(facts);
+  if (refused && !refused.ok) return refused;
+  if (facts.checkout?.channel === "test") {
+    if (!facts.hasStableRef) {
+      return {
+        ok: false,
+        code: "not-pinned",
+        message:
+          "This test build has no saved stable release. Refusing to replace it.",
+      };
+    }
+    return { ok: true, mode: "test" };
+  }
+  const pin = headIsPublishedRelease(facts);
+  if (!pin.ok) return { ok: false, code: "not-pinned", message: pin.message };
+  return { ok: true, mode: "release" };
+}
+
+export function assessUpdateStable(
+  facts: Pick<UpdateWorkspaceFacts, "checkout" | "dirty" | "activeRuns" | "devMode" | "hasStableRef">
+): ApplyDecision {
+  const refused = workspaceRefusal(facts);
+  if (refused) return refused;
+  if (!facts.hasStableRef) {
+    return {
+      ok: false,
+      code: "not-pinned",
+      message: "No stable release is saved. max update --from saves one before leaving the release.",
+    };
+  }
+  return { ok: true, targetTag: "", targetVersion: facts.checkout?.version ?? "" };
+}
+
+export function assessManifestNodeFloor(input: {
+  label: string;
+  manifestText: string;
+  runningNode: string;
+}): { ok: true; requirement: string } | { ok: false; message: string } {
+  const requirement = parseNodeFloorFromPackageManifest(input.manifestText);
+  if (!requirement) {
+    return { ok: false, message: `${input.label} package.json has no engines.node requirement.` };
+  }
+  const parsed = parseNodeFloorRequirement(requirement);
+  if (!parsed.ok) {
+    return {
+      ok: false,
+      message: `${input.label} has unsupported engines.node (${requirement}).`,
+    };
+  }
+  const floor = satisfiesNodeFloor(input.runningNode, requirement);
+  if (!floor.ok) {
+    return {
+      ok: false,
+      message: formatNodeFloorApplyRefusal({
+        tag: input.label,
+        requirement,
+        running: input.runningNode,
+      }),
+    };
+  }
+  return { ok: true, requirement };
+}
+
+/** Verify a bundle and fetch its tip into refs/max/update-target. Returns that commit. */
+export function fetchBundleTip(args: {
+  bundlePath: string;
+  git: (args: string[]) => string;
+}): string {
+  args.git(["bundle", "verify", args.bundlePath]);
+  const heads = args.git(["bundle", "list-heads", args.bundlePath]);
+  const line = heads
+    .split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .find((entry) => entry.length > 0);
+  const ref = line?.split(/\s+/)[1];
+  if (!ref) {
+    throw new Error("Bundle has no tip ref.");
+  }
+  args.git(["fetch", args.bundlePath, `${ref}:refs/max/update-target`]);
+  return args.git(["rev-parse", "refs/max/update-target"]);
+}
 
 function gitFetchTargetRef(args: {
   fetchUrl: string;
@@ -301,6 +668,10 @@ export async function executeUpdateApply(args: {
   targetTag: string;
   targetVersion: string;
   wasRunning: boolean;
+  /** Ref written after a healthy build. Defaults to the release tag. */
+  recordRef?: string;
+  /** When set, daemon, CLI, and dashboard stamps must carry this test id. */
+  expectedTestId?: string | null;
   ops: ApplyOps;
 }): Promise<void> {
   const { ops, targetTag, targetVersion } = args;
@@ -316,14 +687,29 @@ export async function executeUpdateApply(args: {
     ops.git(["reset", "--hard", "refs/max/update-target"]);
     ops.log("npm ci");
     ops.npm(["ci"]);
+    ops.log("Clean build output");
+    ops.cleanBuild();
     ops.log("npm run build");
     ops.npm(["run", "build"]);
+    const stampDecision = assessApplyStamps({
+      targetVersion,
+      stamps: ops.readStamps(),
+      testId: args.expectedTestId,
+    });
+    if (!stampDecision.ok) {
+      throw new Error(stampDecision.message);
+    }
+    ops.log("Install skills");
+    ops.installSkills();
     ops.log("Start daemon");
     await ops.startDaemon();
     const version = await ops.healthVersion();
     if (version !== targetVersion) {
       throw new Error(`Health reported ${version}, expected ${targetVersion}.`);
     }
+    const applied = ops.git(["rev-parse", "HEAD"]);
+    const recordRef = args.recordRef ?? `refs/tags/${targetTag}`;
+    ops.git(["update-ref", recordRef, applied]);
     ops.log(`Running ${targetVersion}. Backup remains refs/max/update-backup.`);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -333,7 +719,10 @@ export async function executeUpdateApply(args: {
       await ops.stopDaemon();
       ops.git(["reset", "--hard", "refs/max/update-backup"]);
       ops.npm(["ci"]);
+      ops.cleanBuild();
       ops.npm(["run", "build"]);
+      ops.log("Restore skills");
+      ops.installSkills();
       if (args.wasRunning) {
         await ops.startDaemon();
       }

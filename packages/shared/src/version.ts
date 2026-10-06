@@ -13,7 +13,7 @@ import {
 export const FACTORY_VERSION = "0.0.0-dev";
 export const DEFAULT_UPDATE_REPO = "MIT-Consulting/maxwell-automations";
 
-export type VersionChannel = "factory" | "public" | "unknown";
+export type VersionChannel = "factory" | "public" | "unknown" | "test";
 
 export type VersionIdentity = {
   version: string;
@@ -21,12 +21,17 @@ export type VersionIdentity = {
   commit?: string | null;
   dirty?: boolean;
   describe?: string | null;
+  /** Release this test build was cut from. Set when `channel` is `test`. */
+  base?: string | null;
+  /** Short id for a test build. Set when `channel` is `test`. */
+  testId?: string | null;
 };
 
 export type UpdateState =
   | "restart-required"
   | "available"
   | "ahead/dev"
+  | "test-build"
   | "disabled"
   | "offline"
   | "unknown"
@@ -119,6 +124,19 @@ export function isFactoryIdentity(id: VersionIdentity | null | undefined): boole
   return id.channel === "factory" || id.version === FACTORY_VERSION;
 }
 
+const SEMVER = /^\d+\.\d+\.\d+$/;
+const TEST_ID = /^[A-Za-z0-9._-]{1,40}$/;
+
+function testFields(
+  version: string,
+  record: Record<string, unknown>
+): { base: string; testId: string } | null {
+  const base = typeof record.base === "string" ? record.base.trim() : "";
+  const testId = typeof record.testId === "string" ? record.testId.trim() : "";
+  if (!SEMVER.test(version) || base !== version || !TEST_ID.test(testId)) return null;
+  return { base, testId };
+}
+
 export function parseIdentityJson(text: string): VersionIdentity | null {
   let value: unknown;
   try {
@@ -131,17 +149,29 @@ export function parseIdentityJson(text: string): VersionIdentity | null {
   if (typeof record.version !== "string" || record.version.trim() === "") {
     return null;
   }
-  const channel: VersionChannel =
-    record.channel === "factory" || record.channel === "public"
+  const version = record.version.trim();
+  let channel: VersionChannel =
+    record.channel === "factory" || record.channel === "public" || record.channel === "test"
       ? record.channel
       : "unknown";
+  const test = channel === "test" ? testFields(version, record) : null;
+  if (channel === "test" && !test) channel = "unknown";
   return {
-    version: record.version.trim(),
+    version,
     channel,
     commit: typeof record.commit === "string" ? record.commit : null,
     dirty: record.dirty === true,
     describe: typeof record.describe === "string" ? record.describe : null,
+    base: test?.base ?? null,
+    testId: test?.testId ?? null,
   };
+}
+
+/** About / CLI line for a test build. Null when the identity is not a test. */
+export function formatTestBuildLine(id: VersionIdentity): string | null {
+  if (id.channel !== "test" || !id.testId) return null;
+  const base = id.base ?? id.version;
+  return `Test build ${id.testId} on ${base}. Return to the release with max update --stable.`;
 }
 
 export function resolveUpdateState(input: {
@@ -167,6 +197,8 @@ export function resolveUpdateState(input: {
   const effective = input.running ?? input.checkout;
   if (!effective) return "unknown";
   if (isFactoryIdentity(effective)) return "ahead/dev";
+  // max update --apply refuses a test checkout, so a newer release is not actionable here.
+  if (effective.channel === "test") return "test-build";
   if (!input.checkEnabled) return "disabled";
   if (input.offline) return "offline";
   if (input.availableUnresolved) return "unknown";
@@ -182,7 +214,9 @@ export function formatRunningLabel(id: VersionIdentity): string {
   if (isFactoryIdentity(id)) {
     return id.dirty ? `${FACTORY_VERSION} dirty` : FACTORY_VERSION;
   }
-  return id.dirty ? `${id.version} dirty` : id.version;
+  const version =
+    id.channel === "test" && id.testId ? `${id.version} test ${id.testId}` : id.version;
+  return id.dirty ? `${version} dirty` : version;
 }
 
 export type UpdateDisplayInput = {
@@ -223,6 +257,8 @@ export function formatUpdateSummary(input: UpdateDisplayInput): string {
       return `available — running ${running}, approved ${approved}`;
     case "ahead/dev":
       return `ahead/dev — ${running}`;
+    case "test-build":
+      return `test-build — ${running}; return with max update --stable`;
     case "disabled":
       return "disabled — update check off";
     case "offline":
@@ -268,6 +304,8 @@ export function updateStateDetail(
       return "A newer approved release exists. Upgrading is a manual pin move.";
     case "ahead/dev":
       return "Factory checkout. Public tags are not an upgrade target.";
+    case "test-build":
+      return "Test build installed. Release updates wait until you return to the release.";
     case "disabled":
       return "Update check is turned off.";
     case "offline":

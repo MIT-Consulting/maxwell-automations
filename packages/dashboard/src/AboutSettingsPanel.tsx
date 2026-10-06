@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type JSX } from "react";
 import {
   formatPersistedUpgradeActionsLines,
   formatRunningLabel,
+  formatTestBuildLine,
   formatRunningNodeLabel,
   satisfiesNodeFloor,
   updateStateDetail,
@@ -14,6 +15,7 @@ import {
   CheckCircle2,
   ExternalLink,
   FileText,
+  FlaskConical,
   GitBranch,
   RefreshCw,
   Sparkles,
@@ -63,6 +65,13 @@ function StateBadge({ state }: { state?: UpdateState }): JSX.Element {
         <span className="inline-flex items-center gap-1.5 rounded-full border border-purple-500/40 bg-purple-500/10 px-2.5 py-0.5 text-xs font-semibold text-purple-400">
           <GitBranch className="size-3.5" />
           Factory Dev
+        </span>
+      );
+    case "test-build":
+      return (
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-0.5 text-xs font-semibold text-amber-400">
+          <FlaskConical className="size-3.5" />
+          Test build
         </span>
       );
     case "offline":
@@ -138,6 +147,9 @@ export function AboutSettingsPanel({
 
   const running = status?.running;
   const checkout = status?.checkout;
+  const testLine =
+    (running ? formatTestBuildLine(running) : null) ??
+    (checkout ? formatTestBuildLine(checkout) : null);
   const showCheckout =
     Boolean(checkout) && checkout!.version !== running?.version;
   const state = status?.updateState;
@@ -386,7 +398,7 @@ export function AboutSettingsPanel({
               Update State
             </span>
             <span className="font-semibold text-foreground capitalize">
-              {state ?? "Unknown"}
+              {state === "test-build" ? "Test build" : (state ?? "Unknown")}
             </span>
             <span className="text-[11px] text-muted-foreground">
               {state ? updateStateDetail(state, updateDetailInput) : "No state reported"}
@@ -409,6 +421,10 @@ export function AboutSettingsPanel({
             </span>
           </div>
         </div>
+
+        {testLine ? (
+          <p className="m-0 text-xs text-muted-foreground">{testLine}</p>
+        ) : null}
 
         {status?.publicAvailable && !status.available && (
           <p className="m-0 text-xs text-muted-foreground">

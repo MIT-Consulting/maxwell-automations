@@ -11,12 +11,12 @@ Public repos (lockstep tags):
 ## Pin to a tag
 
 Do not track `main`. Pin your fork to a release tag. Latest tag is
-`v1.1.3` (2026-10-05). Upgrade deliberately with the changelog in hand.
+`v1.1.4` (2026-10-05). Upgrade deliberately with the changelog in hand.
 
 ```bash
 git clone https://github.com/MIT-Consulting/maxwell-automations.git
 cd maxwell-automations
-git checkout v1.1.3
+git checkout v1.1.4
 ```
 
 Skills bundle: same tag on `maxwell-automations-skills`. Breaking skill changes
@@ -26,12 +26,22 @@ ride a major version with the daemon.
 approved release (`settings.update.repo`, default this public repo). They
 report the gap.
 
-`max update --apply` performs the fetch and pin move when HEAD is exactly the
-current release tag, the worktree is clean, and no run is active. It runs
-`npm ci`, `npm run build`, and checks `/health`. If the new version does not
-come up, it resets to `refs/max/update-backup` and rebuilds. It does not run
-on a factory checkout, and the dashboard has no apply button. Read the
-changelog before you pass `--apply`.
+`max update --apply` performs the fetch and pin move when HEAD is the published
+release tag (a local tag, or that tag on the remote when the local one was
+never written), the worktree is clean, and no run is active. It runs `npm ci`
+and `npm run build`, then requires the daemon, CLI, and dashboard stamps to
+match the new version and to have been built against the same shared dist. It
+installs bundled skills, checks `/health`, and records the local release tag.
+If any of that fails, it resets to `refs/max/update-backup`, rebuilds, and
+restores skills. It does not run on a factory checkout, and the dashboard has
+no apply button. Read the changelog before you pass `--apply`.
+
+`max update --from <file>` installs a test bundle on a public clone sitting on
+the release that bundle was cut from. The first departure saves that commit at
+`refs/max/stable`; the tip is recorded at `refs/max/test-build`.
+`max update --stable` returns to the saved release through the same rebuild.
+`max update check` continues to report approved tags only. About names the
+test build and the return command, and it still has no apply button.
 
 Both `--apply` and `--dry-run` fetch the exact target tag into
 `refs/max/update-target` first (network and auth may be required), read that
@@ -45,7 +55,7 @@ Apply runs the **installed** CLI's code, so a bug in the old version's apply
 path cannot be fixed by the release it is installing. Known case: on Windows,
 1.0.7 and earlier fail `--apply` with `spawnSync npm.cmd EINVAL` (rollback
 leaves the checkout on the old tag with its build intact, daemon stopped).
-Move that pin once by hand — `git checkout v1.1.3`, `npm ci`, `npm run build`,
+Move that pin once by hand — `git checkout v1.1.4`, `npm ci`, `npm run build`,
 `max skills install`, `max up` — and `--apply` works from then on.
 
 Root `.npmrc` ships with **`engine-strict=true`** on public exports, so `npm ci`
@@ -70,9 +80,9 @@ Tags keep upgrades *possible*.
 ## Skills
 
 Bundled skills: `implement-fully`, `plan-implement-fully`, and `max-setup`
-(setup/register/adopt router). After `max update --apply`, rerun
-`max skills install` when Upgrade actions say so — bare `max doctor` reports
-drift via `max skills install --check`.
+(setup/register/adopt router). `max update --apply` installs them for the
+version it lands on. Bare `max doctor` still reports drift, and
+`max skills install` repairs it.
 
 - Cursor: import `maxwell-automations-skills` as a plugin (GitHub-backed).
 - CLI: `max skills install` from a Max checkout.

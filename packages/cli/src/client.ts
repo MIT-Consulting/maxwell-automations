@@ -116,7 +116,13 @@ export function daemonBaseUrl(): string {
   return `http://127.0.0.1:${port}`;
 }
 
-export class DaemonError extends Error {}
+/** `index.ts` prints `Error: <message>` (no stack) by matching this name. */
+export class DaemonError extends Error {
+  constructor(message?: string) {
+    super(message);
+    this.name = "DaemonError";
+  }
+}
 
 /**
  * Provisioning returned 409 with a usable plan (conflicts are fatal; the body
