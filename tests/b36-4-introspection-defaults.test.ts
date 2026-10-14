@@ -120,7 +120,7 @@ function assertUnchangedSurface(body: PipelineIntrospectionResponse): void {
     `${GENERATED_CONFIG_KEY_PREFIX}${IMPLEMENT_FULLY_ENTRY_WORKER_KEY}`
   );
   expect(body.requiredVariables).toEqual([...IMPLEMENT_FULLY_VARIABLES]);
-  expect(body.requiredVariables).toHaveLength(10);
+  expect(body.requiredVariables).toHaveLength(11);
   expect(body.requiredSkills).toEqual(implementFullyRequiredSkills());
   expect(body.budgetFormula).toBe(IMPLEMENT_FULLY_BUDGET_FORMULA);
   expect(body.executeBudgetFormula).toBe(IMPLEMENT_FULLY_EXECUTE_BUDGET_FORMULA);

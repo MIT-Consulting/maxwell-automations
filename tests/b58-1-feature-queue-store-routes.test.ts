@@ -255,6 +255,8 @@ describe("b58.1 feature queue store and routes", () => {
       expect(firstBody.entry.featureId).toBe("b58");
       expect(firstBody.entry.position).toBe(1);
       expect("kickoff" in firstBody.entry).toBe(false);
+      expect(firstBody.entry.entryDetail).toBeDefined();
+      expect(firstBody.entry.entryDetail.roleModels).toBeNull();
 
       const secondRes = await fetch(`http://127.0.0.1:${port}/api/feature-queue`, {
         method: "POST",
@@ -315,6 +317,10 @@ describe("b58.1 feature queue store and routes", () => {
       expect(listBody.entries.map((e) => e.featureId)).toEqual(["b58", "b59"]);
       expect(listBody.entries.map((e) => e.position)).toEqual([1, 2]);
       expect(listBody.entries.filter((e) => e.featureId === "b58")).toHaveLength(1);
+      for (const row of listBody.entries) {
+        expect(row.entryDetail).toBeDefined();
+        expect("kickoff" in row).toBe(false);
+      }
 
       const cancelQueuedRes = await fetch(
         `http://127.0.0.1:${port}/api/feature-queue/${encodeURIComponent(listBody.entries[1]!.id)}`,
@@ -345,8 +351,223 @@ describe("b58.1 feature queue store and routes", () => {
       expect(deleteRes.status).toBe(409);
     });
   });
+
+  it("reorders movable rows without changing fixed positions", () => {
+    const root = mkdtempSync(join(tmpdir(), "lca-b88-store-"));
+    const db = openDatabase(join(root, "state.sqlite"));
+    const workspacePath = join(root, "workspace");
+    mkdirSync(workspacePath, { recursive: true });
+    const workspaceId = seedWorkspace(db, workspacePath);
+    const automationId = seedAutomation(db, workspaceId);
+    const queue = new FeatureQueueStore(db);
+    try {
+      const { runningId, queuedAId, queuedBId, doneId } = seedB88ReorderFixture(
+        queue,
+        db,
+        workspaceId,
+        automationId
+      );
+      expect(positionsByFeatureId(queue, workspaceId)).toEqual({
+        "b88-run": 1,
+        b88a: 2,
+        b88b: 3,
+        "b88-done": 4,
+      });
+
+      const outcome = queue.moveEntry(queuedBId, { top: true });
+      expect(outcome.status).toBe("moved");
+      if (outcome.status === "moved") {
+        expect(outcome.row.position).toBe(2);
+      }
+      expect(positionsByFeatureId(queue, workspaceId)).toEqual({
+        "b88-run": 1,
+        b88b: 2,
+        b88a: 3,
+        "b88-done": 4,
+      });
+      expect(queue.getEntry(runningId)?.position).toBe(1);
+      expect(queue.getEntry(doneId)?.position).toBe(4);
+    } finally {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses move ahead of an unfinished after dependency", () => {
+    const root = mkdtempSync(join(tmpdir(), "lca-b88-dep-"));
+    const db = openDatabase(join(root, "state.sqlite"));
+    const workspacePath = join(root, "workspace");
+    mkdirSync(workspacePath, { recursive: true });
+    const workspaceId = seedWorkspace(db, workspacePath);
+    const automationId = seedAutomation(db, workspaceId);
+    const queue = new FeatureQueueStore(db);
+    try {
+      const { queuedAId, queuedBId } = seedB88ReorderFixture(
+        queue,
+        db,
+        workspaceId,
+        automationId
+      );
+      db.prepare(
+        `UPDATE feature_queue_entries SET after_json = ? WHERE id = ?`
+      ).run(JSON.stringify(["b88a"]), queuedBId);
+      const before = positionsByFeatureId(queue, workspaceId);
+
+      const topOutcome = queue.moveEntry(queuedBId, { top: true });
+      expect(topOutcome.status).toBe("ahead-of-dependency");
+      if (topOutcome.status === "ahead-of-dependency") {
+        expect(topOutcome.featureId).toBe("b88a");
+      }
+      expect(positionsByFeatureId(queue, workspaceId)).toEqual(before);
+
+      const beforeOutcome = queue.moveEntry(queuedBId, { before: queuedAId });
+      expect(beforeOutcome.status).toBe("ahead-of-dependency");
+      expect(positionsByFeatureId(queue, workspaceId)).toEqual(before);
+    } finally {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses moving a running entry", () => {
+    const root = mkdtempSync(join(tmpdir(), "lca-b88-running-"));
+    const db = openDatabase(join(root, "state.sqlite"));
+    const workspacePath = join(root, "workspace");
+    mkdirSync(workspacePath, { recursive: true });
+    const workspaceId = seedWorkspace(db, workspacePath);
+    const automationId = seedAutomation(db, workspaceId);
+    const queue = new FeatureQueueStore(db);
+    try {
+      const { runningId } = seedB88ReorderFixture(
+        queue,
+        db,
+        workspaceId,
+        automationId
+      );
+      const before = positionsByFeatureId(queue, workspaceId);
+      const outcome = queue.moveEntry(runningId, { top: true });
+      expect(outcome.status).toBe("not-movable");
+      expect(positionsByFeatureId(queue, workspaceId)).toEqual(before);
+    } finally {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("serves move over HTTP", async () => {
+    await withServer(async ({ port, db, workspaceId, automationId, featureQueue }) => {
+      const { queuedBId, runningId } = seedB88ReorderFixture(
+        featureQueue,
+        db,
+        workspaceId,
+        automationId
+      );
+
+      const invalidRes = await fetch(
+        `http://127.0.0.1:${port}/api/feature-queue/${encodeURIComponent(queuedBId)}/move`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        }
+      );
+      expect(invalidRes.status).toBe(400);
+
+      const beforeRunning = positionsByFeatureId(featureQueue, workspaceId);
+      const runningRes = await fetch(
+        `http://127.0.0.1:${port}/api/feature-queue/${encodeURIComponent(runningId)}/move`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ top: true }),
+        }
+      );
+      expect(runningRes.status).toBe(409);
+      expect(positionsByFeatureId(featureQueue, workspaceId)).toEqual(
+        beforeRunning
+      );
+
+      const moveRes = await fetch(
+        `http://127.0.0.1:${port}/api/feature-queue/${encodeURIComponent(queuedBId)}/move`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ top: true }),
+        }
+      );
+      expect(moveRes.status).toBe(200);
+      const moveBody = (await moveRes.json()) as { entry: FeatureQueueEntry };
+      expect(moveBody.entry.featureId).toBe("b88b");
+      expect(moveBody.entry.position).toBe(2);
+      expect(positionsByFeatureId(featureQueue, workspaceId)).toEqual({
+        "b88-run": 1,
+        b88b: 2,
+        b88a: 3,
+        "b88-done": 4,
+      });
+    });
+  });
 });
 
 function dbPrepareRunning(db: Db, id: string): void {
   db.prepare(`UPDATE feature_queue_entries SET state = 'running' WHERE id = ?`).run(id);
+}
+
+function seedB88ReorderFixture(
+  queue: FeatureQueueStore,
+  db: Db,
+  workspaceId: string,
+  automationId: string
+): {
+  runningId: string;
+  queuedAId: string;
+  queuedBId: string;
+  doneId: string;
+} {
+  const kickoff = sampleKickoff(automationId);
+  const running = queue.enqueue({
+    workspaceId,
+    featureId: "b88-run",
+    after: [],
+    kickoff,
+  });
+  dbPrepareRunning(db, running.id);
+  const queuedA = queue.enqueue({
+    workspaceId,
+    featureId: "b88a",
+    after: [],
+    kickoff,
+  });
+  const queuedB = queue.enqueue({
+    workspaceId,
+    featureId: "b88b",
+    after: [],
+    kickoff,
+  });
+  const done = queue.enqueue({
+    workspaceId,
+    featureId: "b88-done",
+    after: [],
+    kickoff,
+  });
+  db.prepare(`UPDATE feature_queue_entries SET state = 'done' WHERE id = ?`).run(
+    done.id
+  );
+  return {
+    runningId: running.id,
+    queuedAId: queuedA.id,
+    queuedBId: queuedB.id,
+    doneId: done.id,
+  };
+}
+
+function positionsByFeatureId(
+  queue: FeatureQueueStore,
+  workspaceId: string
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const row of queue.listEntries(workspaceId)) {
+    out[row.feature_id] = row.position;
+  }
+  return out;
 }

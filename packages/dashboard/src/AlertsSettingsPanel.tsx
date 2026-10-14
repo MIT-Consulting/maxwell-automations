@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { api } from "./api";
+import { WakeHooksSettingsPanel } from "./WakeHooksSettingsPanel";
 
 export type AlertsSettingsPanelProps = {
   isNarrow: boolean;
@@ -530,6 +531,8 @@ export function AlertsSettingsPanel({
               {saving ? "Saving…" : "Save alerts"}
             </Button>
           </div>
+
+          <WakeHooksSettingsPanel />
         </>
       )}
     </div>

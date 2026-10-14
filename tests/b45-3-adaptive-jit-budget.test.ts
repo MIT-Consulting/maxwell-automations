@@ -28,6 +28,7 @@ const BASE_VARIABLES: Omit<ChainVariables, "planningDepth" | "approvalPolicy"> =
     idea: "Configurable implement-fully planning profiles",
     researchApprovalPolicy: "none",
     loopMode: "normal",
+    then: "none",
   };
 
 function vars(planningDepth: "jit" | "full"): ChainVariables {

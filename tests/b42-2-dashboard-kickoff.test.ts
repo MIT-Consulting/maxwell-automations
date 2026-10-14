@@ -223,6 +223,7 @@ describe("b42.2 resolved metadata drives kickoff payload", () => {
       approvalPolicy: "none",
       researchApprovalPolicy: "none",
       loopMode: "normal",
+      then: "none",
     });
     expect(payload.variables?.featureDir.includes("\\")).toBe(false);
     expect(payload.variables?.featureIndex.includes("\\")).toBe(false);
@@ -266,6 +267,7 @@ describe("b42.2 resolved metadata drives kickoff payload", () => {
       approvalPolicy: "none",
       researchApprovalPolicy: "none",
       loopMode: "normal",
+      then: "none",
     });
   });
 });

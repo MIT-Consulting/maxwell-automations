@@ -11,12 +11,12 @@ Public repos (lockstep tags):
 ## Pin to a tag
 
 Do not track `main`. Pin your fork to a release tag. Latest tag is
-`v1.1.4` (2026-10-05). Upgrade deliberately with the changelog in hand.
+`v1.2.0` (2026-10-14). Upgrade deliberately with the changelog in hand.
 
 ```bash
 git clone https://github.com/MIT-Consulting/maxwell-automations.git
 cd maxwell-automations
-git checkout v1.1.4
+git checkout v1.2.0
 ```
 
 Skills bundle: same tag on `maxwell-automations-skills`. Breaking skill changes
@@ -55,7 +55,7 @@ Apply runs the **installed** CLI's code, so a bug in the old version's apply
 path cannot be fixed by the release it is installing. Known case: on Windows,
 1.0.7 and earlier fail `--apply` with `spawnSync npm.cmd EINVAL` (rollback
 leaves the checkout on the old tag with its build intact, daemon stopped).
-Move that pin once by hand — `git checkout v1.1.4`, `npm ci`, `npm run build`,
+Move that pin once by hand — `git checkout v1.2.0`, `npm ci`, `npm run build`,
 `max skills install`, `max up` — and `--apply` works from then on.
 
 Root `.npmrc` ships with **`engine-strict=true`** on public exports, so `npm ci`
@@ -79,8 +79,9 @@ Tags keep upgrades *possible*.
 
 ## Skills
 
-Bundled skills: `implement-fully`, `plan-implement-fully`, and `max-setup`
-(setup/register/adopt router). `max update --apply` installs them for the
+Bundled skills: `implement-fully`, `plan-implement-fully`, `max-setup`
+(setup/register/adopt router), and `max-orchestrate` (capability-map router).
+`max update --apply` installs them for the
 version it lands on. Bare `max doctor` still reports drift, and
 `max skills install` repairs it.
 

@@ -163,8 +163,8 @@ describe("b56.2 kickoff variables and inertness", () => {
       ).researchApprovalPolicy
     ).toBe("before-planning");
     assertVariablesMatchRequired(defaults, introspection.requiredVariables);
-    expect(Object.keys(defaults)).toHaveLength(10);
-    expect(IMPLEMENT_FULLY_VARIABLES).toHaveLength(10);
+    expect(Object.keys(defaults)).toHaveLength(11);
+    expect(IMPLEMENT_FULLY_VARIABLES).toHaveLength(11);
   });
 
   it("keeps introspection entry at plan-skeleton with eight workers", () => {

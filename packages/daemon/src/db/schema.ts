@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 24;
+export const SCHEMA_VERSION = 25;
 
 export const MIGRATION_V1_SQL = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -410,4 +410,14 @@ CREATE TABLE IF NOT EXISTS pipeline_directives (
 
 CREATE INDEX IF NOT EXISTS idx_pipeline_directives_root_created
   ON pipeline_directives(root_run_id, created_at);
+`;
+
+/** Durable webhook delivery dedupe (b84). */
+export const MIGRATION_V25_WEBHOOK_DELIVERIES_SQL = `
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+  name TEXT NOT NULL,
+  delivery_id TEXT NOT NULL,
+  received_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (name, delivery_id)
+);
 `;

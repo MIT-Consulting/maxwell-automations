@@ -2,6 +2,19 @@ import type { TriggerConfig } from "./triggers.js";
 import type { ModelConfigValue, ModelSelection } from "../model.js";
 import type { PipelineModelRole } from "./api.js";
 
+/** YAML shape for one `settings.pipelineRoleModelProfiles.<id>` entry. */
+export type PipelineRoleModelProfileEntry = Partial<
+  Record<PipelineModelRole, ModelConfigValue>
+> & {
+  description?: string;
+};
+
+/** Normalized named profile after settings load — description stays separate. */
+export type ResolvedPipelineRoleModelProfile = {
+  roleModels: Partial<Record<PipelineModelRole, ModelSelection>>;
+  description?: string;
+};
+
 export type ChainConfig = {
   next: string;
   when?: "completed" | "failed" | "always";
@@ -169,6 +182,74 @@ export type NotifySettingsPublic = {
   usable: { ntfy: boolean };
 };
 
+/** Orchestrator wake hook event ids (b83). */
+export const WAKE_HOOK_EVENTS = [
+  "needs_input",
+  "halted",
+  "blocked",
+  "green",
+  "queue_batch_complete",
+] as const;
+
+export type WakeHookEvent = (typeof WAKE_HOOK_EVENTS)[number];
+
+/** YAML shape for one `settings.wakeHooks[]` entry. */
+export type WakeHookConfig = {
+  id: string;
+  sink: "http" | "chat";
+  url?: string;
+  tokenEnv?: string;
+  actorId?: string;
+  events: WakeHookEvent[];
+  workspaceIds?: string[];
+  featureIds?: string[];
+  coalesceMs?: number;
+  maxPerHour?: number;
+  chatId?: string;
+};
+
+/** Fully defaulted wake hook after load (b83). */
+export type ResolvedWakeHookConfig = {
+  id: string;
+  sink: "http" | "chat";
+  url?: string;
+  tokenEnv?: string;
+  actorId?: string;
+  events: WakeHookEvent[];
+  workspaceIds?: string[];
+  featureIds?: string[];
+  coalesceMs: number;
+  maxPerHour: number;
+  chatId?: string;
+};
+
+/** One delivery attempt in the in-memory ring (never includes token or URL). */
+export type WakeHookDeliveryRecord = {
+  at: string;
+  kind: string;
+  status: "success" | "failure";
+  attempt: number;
+  error?: string;
+};
+
+/** Public hook summary for GET /api/settings/wake-hooks. */
+export type WakeHookPublic = {
+  id: string;
+  sink: "http" | "chat";
+  events: WakeHookEvent[];
+  urlHost?: string;
+  chatId?: string;
+  tokenEnv?: string;
+  actorId?: string;
+  noActorActivitySince?: boolean;
+  lastDeliveries: WakeHookDeliveryRecord[];
+};
+
+/** GET /api/settings/wake-hooks response shape. */
+export type WakeHooksPublic = {
+  hooks: WakeHookPublic[];
+};
+
 export type DaemonSettings = {
   maxConcurrentRuns?: number;
   eventRetentionPerRun?: number;
@@ -208,12 +289,10 @@ export type DaemonSettings = {
   pipelineRoleModels?: Partial<Record<PipelineModelRole, ModelConfigValue>>;
   /**
    * Named role-model recipes beside the synthetic `default` map (`pipelineRoleModels`).
+   * Optional `description` is operator calibration prose, not a model role.
    * Loaded once at startup; changing requires `lca restart`.
    */
-  pipelineRoleModelProfiles?: Record<
-    string,
-    Partial<Record<PipelineModelRole, ModelConfigValue>>
-  >;
+  pipelineRoleModelProfiles?: Record<string, PipelineRoleModelProfileEntry>;
   /**
    * Optional default named profile id (must exist in `pipelineRoleModelProfiles`).
    * Loaded once at startup; changing requires `lca restart`.
@@ -263,6 +342,8 @@ export type DaemonSettings = {
    * config — never commit them.
    */
   notify?: NotifySettings;
+  /** Orchestrator wake hooks (b83). Hot-reloadable like `notify`. */
+  wakeHooks?: WakeHookConfig[];
   /**
    * Approved-release check (b68). Loaded once at startup. `token` is a secret
    * and must stay in the home config — never commit it, never return it.

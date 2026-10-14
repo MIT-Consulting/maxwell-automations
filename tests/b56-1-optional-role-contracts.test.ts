@@ -92,7 +92,7 @@ describe("b56.1 optional role settings contracts", () => {
 
     const first = toPipelineIntrospection(IMPLEMENT_FULLY_DEFINITION, {
       pipelineRoleModels: FOUR_ROLE_MODELS,
-      pipelineRoleModelProfiles: { legacy: FOUR_ROLE_MODELS },
+      pipelineRoleModelProfiles: { legacy: { roleModels: FOUR_ROLE_MODELS } },
       defaultPipelineRoleModelProfile: "legacy",
     });
     expect(Object.keys(first.roleDefaults).sort()).toEqual(
@@ -222,7 +222,7 @@ describe("b56.1 introspection compatibility", () => {
   it("surfaces a seven-role profile with structured params through introspection", () => {
     const maxIntrospection = toPipelineIntrospection(IMPLEMENT_FULLY_DEFINITION, {
       pipelineRoleModels: FOUR_ROLE_MODELS,
-      pipelineRoleModelProfiles: { max: MAX_ROLE_MODELS },
+      pipelineRoleModelProfiles: { max: { roleModels: MAX_ROLE_MODELS } },
       defaultPipelineRoleModelProfile: "max",
     });
 
@@ -310,10 +310,11 @@ describe("b56.1 research approval compatibility", () => {
       ...legacy,
       researchApprovalPolicy: "none",
       loopMode: "normal",
+      then: "none",
     });
     expect(legacy.researchApprovalPolicy).toBeUndefined();
     expect(IMPLEMENT_FULLY_VARIABLES).toContain("researchApprovalPolicy");
     expect(IMPLEMENT_FULLY_VARIABLES).toContain("loopMode");
-    expect(IMPLEMENT_FULLY_VARIABLES).toHaveLength(10);
+    expect(IMPLEMENT_FULLY_VARIABLES).toHaveLength(11);
   });
 });

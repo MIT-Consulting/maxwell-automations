@@ -15,7 +15,9 @@ import {
 } from "./roadmap-ids.js";
 import {
   DEFAULT_IMPLEMENT_FULLY_PLANNING_PROFILE_ID,
+  GENERATED_CONFIG_KEY_PREFIX,
   IMPLEMENT_FULLY_APPROVAL_POLICIES,
+  IMPLEMENT_FULLY_FINAL_GATE_WORKER_KEY,
   IMPLEMENT_FULLY_PIPELINE_ID,
   IMPLEMENT_FULLY_PLANNING_DEPTHS,
   IMPLEMENT_FULLY_PLANNING_PROFILES,
@@ -72,6 +74,7 @@ export type KickoffVariables = {
   approvalPolicy: ImplementFullyApprovalPolicy;
   researchApprovalPolicy: ImplementFullyResearchApprovalPolicy;
   loopMode: ImplementFullyLoopMode;
+  then: string;
   /** Display-only kickoff recipe id; not in IMPLEMENT_FULLY_VARIABLES. */
   roleModelProfileId?: string;
 };
@@ -152,10 +155,11 @@ export function validateFeatureSlugIdea(
 }
 
 /**
- * Build the ten kickoff variables (forward slashes always).
+ * Build the eleven kickoff variables (forward slashes always).
  * Optional profile id defaults to Quick/JIT; the profile id itself is not persisted.
  * Optional research-approval policy defaults to `"none"`.
  * Optional loop mode defaults to `"normal"`.
+ * Optional `then` defaults to `"none"` (no post-gate automation).
  */
 export function buildKickoffVariables(
   feature: string,
@@ -163,7 +167,8 @@ export function buildKickoffVariables(
   idea: string,
   profileId: ImplementFullyPlanningProfileId | string = DEFAULT_IMPLEMENT_FULLY_PLANNING_PROFILE_ID,
   researchApprovalPolicy: ImplementFullyResearchApprovalPolicy = "none",
-  loopMode: ImplementFullyLoopMode = "normal"
+  loopMode: ImplementFullyLoopMode = "normal",
+  then: string = "none"
 ): KickoffVariables {
   const controls = resolvePlanningControls(profileId);
   const featureDir = `docs/roadmap/${slug}`;
@@ -178,7 +183,44 @@ export function buildKickoffVariables(
     approvalPolicy: controls.approvalPolicy,
     researchApprovalPolicy,
     loopMode,
+    then,
   };
+}
+
+export type ThenTargetAutomation = {
+  configKey: string;
+  archivedAt: string | null;
+  workspaceId: string;
+};
+
+/**
+ * Validate `--then` against workspace automations before provision.
+ * `"none"` is the explicit default and never resolves to an automation key.
+ */
+export function assertThenTargetAllowed(
+  key: string,
+  automations: readonly ThenTargetAutomation[],
+  workspaceId: string
+): void {
+  if (key === "none") {
+    return;
+  }
+  if (key.startsWith(GENERATED_CONFIG_KEY_PREFIX)) {
+    throw new KickoffError(
+      `"${key}" is a generated worker; --then must name an ordinary automation.`
+    );
+  }
+  const match = automations.find(
+    (a) =>
+      a.workspaceId === workspaceId &&
+      a.configKey === key &&
+      a.archivedAt == null
+  );
+  if (!match) {
+    throw new KickoffError(
+      `"${key}" is not an automation in this workspace.`
+    );
+  }
 }
 
 /**
@@ -280,12 +322,27 @@ export function normalizeImplementFullyChainVariables(
       ? roleModelProfileIdRaw
       : undefined;
 
+  const thenRaw = variables.then;
+  let then: string;
+  if (thenRaw === undefined) {
+    then = "none";
+  } else if (typeof thenRaw !== "string") {
+    throw new KickoffError(
+      `Invalid then: expected string, got ${typeof thenRaw}`
+    );
+  } else if (thenRaw === "") {
+    throw new KickoffError('Invalid then: empty string is not allowed');
+  } else {
+    then = thenRaw;
+  }
+
   return {
     ...variables,
     planningDepth,
     approvalPolicy,
     researchApprovalPolicy,
     loopMode,
+    then,
     ...(roleModelProfileId ? { roleModelProfileId } : {}),
   };
 }
@@ -598,6 +655,85 @@ export function findActivePipelineBlocker(
         status: run.status,
       };
     }
+  }
+  return null;
+}
+
+export type ThenTailBlockerRun = {
+  id: string;
+  parentRunId: string | null;
+  automationId: string;
+  status: string;
+};
+
+export type ThenTailBlockerAutomation = {
+  id: string;
+  configKey: string;
+};
+
+const FINAL_GATE_CONFIG_KEY =
+  GENERATED_CONFIG_KEY_PREFIX + IMPLEMENT_FULLY_FINAL_GATE_WORKER_KEY;
+
+function isFinalGateConfigKey(configKey: string): boolean {
+  return configKey === FINAL_GATE_CONFIG_KEY;
+}
+
+function activeRunHasFinalGateAncestor(
+  run: ThenTailBlockerRun,
+  runById: ReadonlyMap<string, ThenTailBlockerRun>,
+  configKeyByAutomationId: ReadonlyMap<string, string>
+): boolean {
+  const selfKey = configKeyByAutomationId.get(run.automationId);
+  if (selfKey && isFinalGateConfigKey(selfKey)) {
+    return false;
+  }
+
+  const visited = new Set<string>();
+  let currentId = run.parentRunId;
+  while (currentId) {
+    if (visited.has(currentId)) {
+      return false;
+    }
+    visited.add(currentId);
+    const ancestor = runById.get(currentId);
+    if (!ancestor) {
+      return false;
+    }
+    const ancestorKey = configKeyByAutomationId.get(ancestor.automationId);
+    if (ancestorKey && isFinalGateConfigKey(ancestorKey)) {
+      return true;
+    }
+    currentId = ancestor.parentRunId;
+  }
+  return false;
+}
+
+/**
+ * First active run descended from a completed `final-gate`, or null.
+ * Complements {@link findActivePipelineBlocker} — ordinary automations are not
+ * pipeline workers but can hold the tree after a green gate (`--then`).
+ */
+export function findActiveThenTailBlocker(
+  runs: ReadonlyArray<ThenTailBlockerRun>,
+  automations: ReadonlyArray<ThenTailBlockerAutomation>
+): ActivePipelineBlocker | null {
+  const runById = new Map(runs.map((run) => [run.id, run]));
+  const configKeyByAutomationId = new Map(
+    automations.map((automation) => [automation.id, automation.configKey])
+  );
+
+  for (const run of runs) {
+    if (!ACTIVE_PIPELINE_STATUSES.has(run.status)) {
+      continue;
+    }
+    if (!activeRunHasFinalGateAncestor(run, runById, configKeyByAutomationId)) {
+      continue;
+    }
+    return {
+      id: run.id,
+      automationId: run.automationId,
+      status: run.status,
+    };
   }
   return null;
 }

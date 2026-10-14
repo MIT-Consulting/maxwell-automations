@@ -109,7 +109,7 @@ const PLAN: ProvisionPipelineWorkersResponse = {
 };
 
 describe("b63.1 loopMode kickoff contract", () => {
-  it("buildKickoffVariables yields ten keys with loopMode default normal or execute", () => {
+  it("buildKickoffVariables yields eleven keys with loopMode default normal or execute", () => {
     const normal = buildKickoffVariables(FEATURE_ID, FEATURE_SLUG, IDEA);
     expect(Object.keys(normal).sort()).toEqual(
       [...IMPLEMENT_FULLY_VARIABLES].sort()
@@ -124,7 +124,7 @@ describe("b63.1 loopMode kickoff contract", () => {
       "none",
       "execute"
     );
-    expect(Object.keys(execute)).toHaveLength(10);
+    expect(Object.keys(execute)).toHaveLength(11);
     expect(execute.loopMode).toBe("execute");
 
     const cliNormal = cliBuildKickoffVariables(FEATURE_ID, FEATURE_SLUG, IDEA);

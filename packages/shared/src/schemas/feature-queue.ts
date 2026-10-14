@@ -36,3 +36,9 @@ export const enqueueFeatureSchema = z
       });
     }
   });
+
+export const moveFeatureQueueEntrySchema = z.union([
+  z.strictObject({ before: nonEmptyString }),
+  z.strictObject({ after: nonEmptyString }),
+  z.strictObject({ top: z.literal(true) }),
+]);

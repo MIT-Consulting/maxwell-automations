@@ -44,3 +44,11 @@ create / adopt / ready:
 ## Orchestrating Max
 
 <!-- b80 appends operator orchestration guidance below this seam -->
+
+After setup is complete, invoke the **`max-orchestrate`** skill (or run
+`max capabilities --json`, adding `--workspace` when the target repo is known).
+Select a surface by `bestFor`, follow its playbook, and obey anti-patterns —
+the CLI owns changing verbs and flags, not this file.
+
+For configuration and recovery details see [docs/configuration.md](./docs/configuration.md)
+and [docs/troubleshooting.md](./docs/troubleshooting.md).

@@ -15,9 +15,23 @@ import {
 import {
   ALERT_NOTIFY_EVENTS,
   NTFY_NOTIFY_EVENTS,
+  WAKE_HOOK_EVENTS,
 } from "../types/config.js";
 
 const nonEmptyString = z.string().trim().min(1);
+
+const webhookNameSchema = z
+  .string()
+  .regex(/^[a-z0-9][a-z0-9-]{0,63}$/);
+
+const webhookSecretEnvSchema = z
+  .string()
+  .regex(/^[A-Z][A-Z0-9_]{0,63}$/);
+
+const webhookFieldKeySchema = z
+  .string()
+  .regex(/^[A-Za-z][A-Za-z0-9_]{0,63}$/);
+
 export const triggerConfigSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("cron"),
@@ -41,6 +55,12 @@ export const triggerConfigSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     type: z.literal("manual"),
+  }),
+  z.strictObject({
+    type: z.literal("webhook"),
+    name: webhookNameSchema,
+    secretEnv: webhookSecretEnvSchema,
+    fields: z.array(webhookFieldKeySchema).optional(),
   }),
 ]);
 
@@ -186,9 +206,20 @@ export const pipelineRoleModelsSchema = z.strictObject(
 
 const pipelineRoleModelProfileIdPattern = /^[a-z][a-z0-9-]*$/;
 
+/** One named profile entry: optional operator description plus role keys (b55/b80). */
+export const pipelineRoleModelProfileEntrySchema = z.strictObject({
+  description: nonEmptyString.optional(),
+  ...Object.fromEntries(
+    PIPELINE_MODEL_ROLES.map((role) => [
+      role,
+      modelConfigValueSchema.optional(),
+    ])
+  ) as Record<PipelineModelRole, z.ZodOptional<typeof modelConfigValueSchema>>,
+});
+
 /** Named role-model recipes keyed by operator-chosen profile id (b55). */
 export const pipelineRoleModelProfilesSchema = z
-  .record(z.string(), pipelineRoleModelsSchema)
+  .record(z.string(), pipelineRoleModelProfileEntrySchema)
   .superRefine((profiles, ctx) => {
     for (const profileId of Object.keys(profiles)) {
       if (!pipelineRoleModelProfileIdPattern.test(profileId)) {
@@ -301,6 +332,87 @@ export const notifySettingsSchema = z.strictObject({
   ntfy: ntfyNotifySettingsSchema.optional(),
 });
 
+const wakeHookIdSchema = z
+  .string()
+  .regex(/^[a-z0-9][a-z0-9-]{0,63}$/);
+
+const wakeHookTokenEnvSchema = z
+  .string()
+  .regex(/^[A-Z][A-Z0-9_]{0,63}$/);
+
+export const wakeHookConfigSchema = z
+  .strictObject({
+    id: wakeHookIdSchema,
+    sink: z.enum(["http", "chat"]),
+    url: httpOrHttpsUrl.optional(),
+    tokenEnv: wakeHookTokenEnvSchema.optional(),
+    actorId: nonEmptyString.optional(),
+    events: z.array(z.enum(WAKE_HOOK_EVENTS)).min(1),
+    workspaceIds: z.array(nonEmptyString).optional(),
+    featureIds: z.array(nonEmptyString).optional(),
+    coalesceMs: z.number().int().min(0).max(600_000).optional(),
+    maxPerHour: z.number().int().min(1).max(120).optional(),
+    chatId: nonEmptyString.optional(),
+  })
+  .superRefine((hook, ctx) => {
+    if (hook.sink === "http") {
+      if (hook.url == null) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "url is required when sink is http",
+          path: ["url"],
+        });
+      }
+      if (hook.tokenEnv == null) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "tokenEnv is required when sink is http",
+          path: ["tokenEnv"],
+        });
+      }
+    }
+    if (hook.sink === "chat") {
+      if (hook.chatId == null) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "chatId is required when sink is chat",
+          path: ["chatId"],
+        });
+      }
+      if (hook.url != null) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "url is forbidden when sink is chat",
+          path: ["url"],
+        });
+      }
+      if (hook.tokenEnv != null) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "tokenEnv is forbidden when sink is chat",
+          path: ["tokenEnv"],
+        });
+      }
+    }
+  });
+
+export const wakeHooksSchema = z
+  .array(wakeHookConfigSchema)
+  .superRefine((hooks, ctx) => {
+    const seen = new Set<string>();
+    for (const hook of hooks) {
+      if (seen.has(hook.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `duplicate wake hook id: ${hook.id}`,
+          path: [],
+        });
+        return;
+      }
+      seen.add(hook.id);
+    }
+  });
+
 const githubRepoName = z
   .string()
   .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/);
@@ -352,6 +464,8 @@ export const settingsSchema = z.strictObject({
   maxFileViewerEntries: z.number().int().positive().optional(),
   /** Optional phone-notify sinks (b48). Absent means disabled. */
   notify: notifySettingsSchema.optional(),
+  /** Orchestrator wake hooks (b83). Hot-reloadable; token via `tokenEnv` only. */
+  wakeHooks: wakeHooksSchema.optional(),
   /** Approved-release awareness (b68). Absent uses the public repo and a 24h cache. */
   update: updateSettingsSchema.optional(),
 });

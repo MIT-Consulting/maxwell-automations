@@ -1,9 +1,11 @@
 import {
   classifyFeatureQueueOutcome,
   featureQueueFailureDetail,
+  readQueueEntryDetail,
   readQueuePreviewFields,
   type FeatureQueueEntry,
   type FeatureQueueEntryOrigin,
+  type MoveFeatureQueueRequest,
   type TriggerRunRequest,
 } from "@lca/shared";
 import { randomUUID } from "node:crypto";
@@ -51,6 +53,21 @@ export class FeatureQueueError extends Error {
 
 const ACTIVE_DUPLICATE_STATES = ["queued", "running", "blocked"] as const;
 
+const MOVABLE_STATES = ["queued", "blocked"] as const;
+
+function isMovableState(state: string): boolean {
+  return (MOVABLE_STATES as readonly string[]).includes(state);
+}
+
+export type MoveEntryResult =
+  | { status: "moved"; row: FeatureQueueEntryRow }
+  | { status: "missing" }
+  | { status: "not-movable" }
+  | { status: "anchor-missing"; anchorId: string }
+  | { status: "bad-anchor" }
+  | { status: "same-anchor" }
+  | { status: "ahead-of-dependency"; featureId: string };
+
 export function failedFeatureBlockDetail(featureId: string): string {
   return `blocked by failed feature ${featureId}`;
 }
@@ -88,6 +105,7 @@ export function toFeatureQueueEntry(row: FeatureQueueEntryRow): FeatureQueueEntr
     runId: row.run_id,
     detail: row.detail,
     ...readQueuePreviewFields(row.kickoff_json),
+    entryDetail: readQueueEntryDetail(row.kickoff_json),
     createdAt: row.created_at,
     startedAt: row.started_at,
     settledAt: row.settled_at,
@@ -200,6 +218,118 @@ export class FeatureQueueStore {
     return this.db
       .prepare(`SELECT * FROM feature_queue_entries WHERE run_id = ?`)
       .get(runId) as FeatureQueueEntryRow | undefined;
+  }
+
+  moveEntry(id: string, target: MoveFeatureQueueRequest): MoveEntryResult {
+    const apply = this.db.transaction((): MoveEntryResult => {
+      const subject = this.getEntry(id);
+      if (!subject) {
+        return { status: "missing" };
+      }
+      if (!isMovableState(subject.state)) {
+        return { status: "not-movable" };
+      }
+
+      const allRows = this.listEntries(subject.workspace_id);
+      const movable = allRows.filter((row) => isMovableState(row.state));
+      const movablePositions = movable.map((row) => row.position).sort((a, b) => a - b);
+      const movableIds = movable.map((row) => row.id);
+      const subjectIdx = movableIds.indexOf(id);
+      if (subjectIdx === -1) {
+        return { status: "not-movable" };
+      }
+
+      let insertIdx: number;
+      if ("top" in target) {
+        insertIdx = 0;
+      } else if ("before" in target) {
+        const anchorId = target.before;
+        if (anchorId === id) {
+          return { status: "same-anchor" };
+        }
+        const anchorRow = this.getEntry(anchorId);
+        if (!anchorRow || anchorRow.workspace_id !== subject.workspace_id) {
+          return { status: "anchor-missing", anchorId };
+        }
+        if (!isMovableState(anchorRow.state)) {
+          return { status: "bad-anchor" };
+        }
+        const anchorIdx = movableIds.indexOf(anchorId);
+        if (anchorIdx === -1) {
+          return { status: "bad-anchor" };
+        }
+        insertIdx = subjectIdx < anchorIdx ? anchorIdx - 1 : anchorIdx;
+      } else {
+        const anchorId = target.after;
+        if (anchorId === id) {
+          return { status: "same-anchor" };
+        }
+        const anchorRow = this.getEntry(anchorId);
+        if (!anchorRow || anchorRow.workspace_id !== subject.workspace_id) {
+          return { status: "anchor-missing", anchorId };
+        }
+        if (!isMovableState(anchorRow.state)) {
+          return { status: "bad-anchor" };
+        }
+        const anchorIdx = movableIds.indexOf(anchorId);
+        if (anchorIdx === -1) {
+          return { status: "bad-anchor" };
+        }
+        insertIdx = subjectIdx < anchorIdx ? anchorIdx : anchorIdx + 1;
+      }
+
+      const newMovableIds = movableIds.filter((entryId) => entryId !== id);
+      newMovableIds.splice(insertIdx, 0, id);
+
+      if (newMovableIds.every((entryId, index) => entryId === movableIds[index])) {
+        return { status: "moved", row: subject };
+      }
+
+      const newPositionById = new Map<string, number>();
+      for (let i = 0; i < newMovableIds.length; i++) {
+        newPositionById.set(newMovableIds[i]!, movablePositions[i]!);
+      }
+      const subjectNewPosition = newPositionById.get(id)!;
+
+      let afterDeps: string[] = [];
+      try {
+        const parsed = JSON.parse(subject.after_json) as unknown;
+        if (Array.isArray(parsed)) {
+          afterDeps = parsed.filter((item): item is string => typeof item === "string");
+        }
+      } catch {
+        afterDeps = [];
+      }
+
+      for (const depId of afterDeps) {
+        const depRow = this.getNewestEntryByFeatureId(
+          subject.workspace_id,
+          depId
+        );
+        if (depRow && depRow.state !== "done") {
+          if (depRow.position >= subjectNewPosition) {
+            return { status: "ahead-of-dependency", featureId: depId };
+          }
+        }
+      }
+
+      const updateStmt = this.db.prepare(
+        `UPDATE feature_queue_entries SET
+           position = ?,
+           updated_at = datetime('now')
+         WHERE id = ?`
+      );
+      for (const entryId of newMovableIds) {
+        const row = movable.find((candidate) => candidate.id === entryId)!;
+        const newPosition = newPositionById.get(entryId)!;
+        if (row.position !== newPosition) {
+          updateStmt.run(newPosition, entryId);
+        }
+      }
+
+      return { status: "moved", row: this.getEntry(id)! };
+    });
+    return apply();
   }
 
   cancelEntry(id: string): "cancelled" | "running" | "missing" {

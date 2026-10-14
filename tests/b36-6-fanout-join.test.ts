@@ -49,6 +49,7 @@ const CONTEXT: ChainRunContext = {
     approvalPolicy: "none",
     researchApprovalPolicy: "none",
     loopMode: "normal",
+    then: "none",
   },
   roleModels: {
     planner: { id: "planner-model" },

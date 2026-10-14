@@ -37,6 +37,10 @@ import { api, EscalationError, onAuthRequired } from "./api";
 import { AutomationModal } from "./AutomationModal";
 import { TokenGate } from "./TokenGate";
 import { AutomationCard, QueuePreviewCard, RunCard } from "./cards";
+import {
+  previewMoveTarget,
+  waitingDependentCount,
+} from "./queuePreviewActions";
 import { MobileCreateFab } from "./MobileCreateFab";
 import { MobileFilterSheet } from "./MobileFilterSheet";
 import { OverlayScrollArea } from "./OverlayScrollArea";
@@ -1676,14 +1680,87 @@ export function App() {
               <p className="m-0 pt-1 text-[11px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
                 Up next
               </p>
-              {runningQueuePreview.map((item) => (
-                <QueuePreviewCard
-                  key={item.entryId}
-                  item={item}
-                  workspaceName={workspaceLabel(item.workspaceId, workspaces)}
-                  showWorkspace={boardScopeAll}
-                />
-              ))}
+              {runningQueuePreview.map((item) => {
+                const isStarting = item.readiness === "starting";
+                return (
+                  <QueuePreviewCard
+                    key={item.entryId}
+                    item={item}
+                    workspaceName={workspaceLabel(item.workspaceId, workspaces)}
+                    showWorkspace={boardScopeAll}
+                    {...(isStarting
+                      ? {}
+                      : {
+                          onMoveUp: () => {
+                            const target = previewMoveTarget(
+                              runningQueuePreview,
+                              item.entryId,
+                              "up"
+                            );
+                            if (target) {
+                              action(() =>
+                                api.moveFeatureQueueEntry(item.entryId, target)
+                              );
+                            }
+                          },
+                          onMoveDown: () => {
+                            const target = previewMoveTarget(
+                              runningQueuePreview,
+                              item.entryId,
+                              "down"
+                            );
+                            if (target) {
+                              action(() =>
+                                api.moveFeatureQueueEntry(item.entryId, target)
+                              );
+                            }
+                          },
+                          onMoveTop: () => {
+                            const target = previewMoveTarget(
+                              runningQueuePreview,
+                              item.entryId,
+                              "top"
+                            );
+                            if (target) {
+                              action(() =>
+                                api.moveFeatureQueueEntry(item.entryId, target)
+                              );
+                            }
+                          },
+                          onCancel: () =>
+                            action(() =>
+                              api.cancelFeatureQueueEntry(item.entryId)
+                            ),
+                          disableMoveUp:
+                            previewMoveTarget(
+                              runningQueuePreview,
+                              item.entryId,
+                              "up"
+                            ) === null,
+                          disableMoveDown:
+                            previewMoveTarget(
+                              runningQueuePreview,
+                              item.entryId,
+                              "down"
+                            ) === null,
+                          disableMoveTop:
+                            previewMoveTarget(
+                              runningQueuePreview,
+                              item.entryId,
+                              "top"
+                            ) === null,
+                          dependentCount: waitingDependentCount(
+                            featureQueueEntries,
+                            {
+                              workspaceId: item.workspaceId,
+                              featureId: item.featureId,
+                              entryId: item.entryId,
+                            }
+                          ),
+                        })}
+                  />
+                );
+              })}
             </>
           ) : null}
         </div>

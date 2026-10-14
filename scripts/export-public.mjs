@@ -83,6 +83,7 @@ export const SKILL_SOURCES = [
   "implement-fully",
   "plan-implement-fully",
   "max-setup",
+  "max-orchestrate",
 ];
 
 const SKIP_DIR_NAMES = new Set([

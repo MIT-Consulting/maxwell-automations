@@ -229,7 +229,7 @@ describe("b45.1 shared planning profile contract", () => {
         DOCUMENTED_IDEA
       )
     ).toMatchObject({ planningDepth: "jit", approvalPolicy: "none" });
-    expect(IMPLEMENT_FULLY_VARIABLES).toHaveLength(10);
+    expect(IMPLEMENT_FULLY_VARIABLES).toHaveLength(11);
     expect(IMPLEMENT_FULLY_VARIABLES).toContain("planningDepth");
     expect(IMPLEMENT_FULLY_VARIABLES).toContain("approvalPolicy");
     expect(IMPLEMENT_FULLY_VARIABLES).toContain("loopMode");
@@ -291,6 +291,7 @@ describe("b45.1 shared planning profile contract", () => {
       approvalPolicy: "none",
       researchApprovalPolicy: "none",
       loopMode: "normal",
+      then: "none",
     });
 
     const other = { pipelineId: "other-pipe", foo: "bar" };
@@ -305,7 +306,7 @@ describe("b45.1 introspection advertises shared profiles", () => {
       pipelineRoleModelProfiles: {},
       defaultPipelineRoleModelProfile: null,
     });
-    expect(body.requiredVariables).toHaveLength(10);
+    expect(body.requiredVariables).toHaveLength(11);
     expect(body.requiredVariables).toEqual([...IMPLEMENT_FULLY_VARIABLES]);
     expect(body.workers).toHaveLength(8);
     expect(body.workers.map((w) => w.key)).toEqual(
@@ -566,6 +567,7 @@ describe("b45.1 daemon six-variable compatibility", () => {
         approvalPolicy: "none",
         researchApprovalPolicy: "none",
         loopMode: "normal",
+        then: "none",
       };
 
       const rootId = await engine.triggerRun(entryId, "manual", {

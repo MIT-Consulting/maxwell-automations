@@ -43,7 +43,7 @@ describe("b36.03a pipeline model roles", () => {
 
 describe("b36.03a implement-fully variables", () => {
   it("has exactly ten entries that parse as chainVariablesSchema keys", () => {
-    expect(IMPLEMENT_FULLY_VARIABLES).toHaveLength(10);
+    expect(IMPLEMENT_FULLY_VARIABLES).toHaveLength(11);
     const variables = Object.fromEntries(
       IMPLEMENT_FULLY_VARIABLES.map((key) => [key, `value-for-${key}`])
     );

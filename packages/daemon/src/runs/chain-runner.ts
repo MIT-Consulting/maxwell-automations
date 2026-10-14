@@ -839,16 +839,33 @@ export class ChainRunner {
       const automation = this.store.getAutomationByIdIncludingArchived(
         row.automation_id
       );
-      if (!automation?.chain_json) {
+      if (!automation) {
         return;
       }
 
       let chain: ChainConfig;
-      try {
-        chain = JSON.parse(automation.chain_json) as ChainConfig;
-      } catch {
-        this.onLog(`Chain runner: invalid chain_json on automation ${automation.id}`);
-        return;
+      let thenSuccessor = false;
+
+      if (automation.chain_json) {
+        try {
+          chain = JSON.parse(automation.chain_json) as ChainConfig;
+        } catch {
+          this.onLog(
+            `Chain runner: invalid chain_json on automation ${automation.id}`
+          );
+          return;
+        }
+      } else {
+        const synthetic = this.tryBuildThenSuccessorChain(
+          row,
+          automation,
+          status
+        );
+        if (!synthetic) {
+          return;
+        }
+        chain = synthetic;
+        thenSuccessor = true;
       }
 
       if (!chain.next) {
@@ -896,7 +913,7 @@ export class ChainRunner {
         return;
       }
 
-      if (row.chain_stop_requested_at) {
+      if (row.chain_stop_requested_at && !thenSuccessor) {
         this.store.appendEvent(runId, "run.chain-skipped", {
           reason: "stopped",
           next: chain.next,
@@ -953,6 +970,9 @@ export class ChainRunner {
       if (contextAware && parsedContext?.ok) {
         depth = row.chain_depth!;
         maxDepth = row.chain_max_depth_override ?? row.chain_max_depth!;
+        if (thenSuccessor) {
+          maxDepth = depth + 1 + this.maxDepth;
+        }
         try {
           chainContext = {
             ...parsedContext.context,
@@ -1174,6 +1194,9 @@ export class ChainRunner {
         modelRole,
         modelRoleResolved,
       };
+      if (thenSuccessor) {
+        chainedPayload.source = "then";
+      }
       if (chainNext !== chain.next) {
         chainedPayload.executeModeRemap = {
           from: chain.next,
@@ -1208,6 +1231,60 @@ export class ChainRunner {
         }
       }
     }
+  }
+
+  /**
+   * Synthesize a one-hop chain when a green `final-gate` names `then` other
+   * than `none`. Catalog `chain_json` stays null; this is not feature-end routing.
+   */
+  private tryBuildThenSuccessorChain(
+    row: RunRow,
+    automation: AutomationRow,
+    status: RunStatus
+  ): ChainConfig | null {
+    if (status !== "completed") {
+      return null;
+    }
+    if (
+      workerKeyFromConfigKey(automation.config_key) !==
+      IMPLEMENT_FULLY_FINAL_GATE_WORKER_KEY
+    ) {
+      return null;
+    }
+    const stopReason = row.chain_stop_reason;
+    if (stopReason == null || !stopReason.startsWith("complete:")) {
+      return null;
+    }
+
+    const parsedContext = this.store.parseChainContext(row);
+    const contextAware =
+      parsedContext?.ok === true &&
+      row.chain_depth != null &&
+      row.chain_max_depth != null &&
+      row.chain_root_run_id != null;
+    if (!contextAware || parsedContext?.ok !== true) {
+      return null;
+    }
+
+    let thenNext: string;
+    try {
+      const variables = normalizeImplementFullyChainVariables(
+        parsedContext.context.variables
+      );
+      const thenValue = variables.then;
+      if (typeof thenValue !== "string" || thenValue === "none") {
+        return null;
+      }
+      thenNext = thenValue;
+    } catch {
+      return null;
+    }
+
+    return {
+      next: thenNext,
+      when: "completed",
+      passResult: true,
+    };
   }
 
   /**

@@ -1106,19 +1106,74 @@ const PREVIEW_BADGE_STYLE: Record<
   waiting: "border-border bg-card/60 text-muted-foreground font-normal",
 };
 
+function queuePreviewDocBasename(path: string): string {
+  const parts = path.split("/");
+  return parts[parts.length - 1] ?? path;
+}
+
+function queuePreviewRecipeLine(
+  detail: QueuePreviewItem["entryDetail"]
+): string | null {
+  if (detail.roleModelProfileId) {
+    return detail.roleModelProfileId;
+  }
+  if (detail.roleModels && detail.roleModels.length > 0) {
+    return detail.roleModels
+      .map(({ role, modelId }) => `${role}=${modelId}`)
+      .join(", ");
+  }
+  return null;
+}
+
+function queuePreviewControlsLine(
+  detail: QueuePreviewItem["entryDetail"]
+): string | null {
+  const parts = [
+    detail.planningDepth,
+    detail.approvalPolicy,
+    detail.researchApprovalPolicy,
+    detail.loopMode,
+  ].filter((value): value is string => value != null);
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
 export function QueuePreviewCard({
   item,
   workspaceName,
   showWorkspace,
+  onMoveTop,
+  onMoveUp,
+  onMoveDown,
+  onCancel,
+  dependentCount = 0,
+  disableMoveUp = false,
+  disableMoveDown = false,
+  disableMoveTop = false,
 }: {
   item: QueuePreviewItem;
   workspaceName: string;
   showWorkspace: boolean;
+  onMoveTop?: () => void;
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
+  onCancel?: () => void;
+  dependentCount?: number;
+  disableMoveUp?: boolean;
+  disableMoveDown?: boolean;
+  disableMoveTop?: boolean;
 }) {
   const title = item.featureSlug ?? item.featureId;
   const tooltipTitle = item.featureSlug
     ? `${item.featureId} · ${item.featureSlug}`
     : item.featureId;
+  const { entryDetail } = item;
+  const docPath = entryDetail.featureDocPath;
+  const recipeLine = queuePreviewRecipeLine(entryDetail);
+  const controlsLine = queuePreviewControlsLine(entryDetail);
+  const formattedCreated = formatTimestamp(item.createdAt);
+  const positionLine = formattedCreated
+    ? `#${item.position} · ${formattedCreated}`
+    : `#${item.position}`;
   return (
     <Card
       data-queue-preview={item.entryId}
@@ -1142,6 +1197,14 @@ export function QueuePreviewCard({
               {item.summary}
             </div>
           ) : null}
+          {entryDetail.then ? (
+            <div
+              className="truncate text-[11px] text-muted-foreground"
+              title={`then ${entryDetail.then}`}
+            >
+              then {entryDetail.then}
+            </div>
+          ) : null}
           {item.reason ? (
             <div
               className={cn(
@@ -1163,6 +1226,114 @@ export function QueuePreviewCard({
           {PREVIEW_BADGE[item.readiness]}
         </Badge>
       </div>
+      <div className="mt-1.5 space-y-0.5">
+        {docPath ? (
+          <div className="truncate text-[11px]">
+            <FilesDocLink
+              workspaceId={item.workspaceId}
+              path={docPath}
+              title={docPath}
+            >
+              {queuePreviewDocBasename(docPath)}
+            </FilesDocLink>
+          </div>
+        ) : null}
+        {recipeLine ? (
+          <div
+            className="truncate text-[11px] text-muted-foreground"
+            title={recipeLine}
+          >
+            {recipeLine}
+          </div>
+        ) : null}
+        {controlsLine ? (
+          <div
+            className="truncate text-[11px] text-muted-foreground"
+            title={controlsLine}
+          >
+            {controlsLine}
+          </div>
+        ) : null}
+        {item.afterStates.map((dep) => {
+          const depLine = `after ${dep.featureId} (${dep.state})`;
+          return (
+            <div
+              key={dep.featureId}
+              className="truncate text-[11px] text-muted-foreground"
+              title={depLine}
+            >
+              {depLine}
+            </div>
+          );
+        })}
+        <div
+          className="truncate text-[11px] text-muted-foreground"
+          title={item.createdAt}
+        >
+          {positionLine}
+        </div>
+      </div>
+      {onCancel || onMoveUp || onMoveDown || onMoveTop ? (
+        <div
+          className="mt-2 flex flex-wrap gap-1"
+          onClick={(event) => event.stopPropagation()}
+        >
+          {onMoveUp ? (
+            <Button
+              type="button"
+              size="xs"
+              variant="ghost"
+              disabled={disableMoveUp}
+              onClick={onMoveUp}
+            >
+              Up
+            </Button>
+          ) : null}
+          {onMoveDown ? (
+            <Button
+              type="button"
+              size="xs"
+              variant="ghost"
+              disabled={disableMoveDown}
+              onClick={onMoveDown}
+            >
+              Down
+            </Button>
+          ) : null}
+          {onMoveTop ? (
+            <Button
+              type="button"
+              size="xs"
+              variant="ghost"
+              disabled={disableMoveTop}
+              onClick={onMoveTop}
+            >
+              Top
+            </Button>
+          ) : null}
+          {onCancel ? (
+            <ConfirmButton
+              label={
+                dependentCount > 0
+                  ? `Cancel (${dependentCount} depend)`
+                  : "Cancel"
+              }
+              confirmLabel={
+                dependentCount > 0
+                  ? `Cancel (${dependentCount} depend)`
+                  : "Cancel"
+              }
+              title={
+                dependentCount > 0
+                  ? "Waiting dependents stay queued until the runner blocks them. Cancel does not rewrite them."
+                  : undefined
+              }
+              size="xs"
+              onConfirm={onCancel}
+            />
+          ) : null}
+        </div>
+      ) : null}
       {showWorkspace ? (
         <div className="mt-2">
           <WorkspaceChip name={workspaceName} />

@@ -53,7 +53,10 @@ a vague reference in one round trip. For pasteable support evidence use
 `max doctor --report` (redacted bundle). For additive index repairs use
 `max roadmap fix` (diff + confirm; `--yes` in non-TTY).
 For implement-fully pipelines, prefer the daemon snapshot via `max watch` /
-`max doctor --feature b42` over `/lca-dev runs` alone. Forward-only steering:
+`max doctor --feature b42` over `/lca-dev runs` alone. Outside agents choosing
+kickoff or supervision surfaces should load **`max capabilities --json`** (or
+invoke **`max-orchestrate`**) — do not treat this skill as a second catalog.
+Forward-only steering:
 `max directive` (later steps), running role swap: `max escalate --feature b-dm58 --role …`,
 stop after step: `max pipeline-stop` (not `max stop`). Directives do not reach the
 active step — use `max message` / `max interrupt`. Set `LCA_ACTOR` for attribution.

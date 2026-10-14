@@ -28,8 +28,13 @@ const CLI_INDEX = join(REPO_ROOT, "packages", "cli", "src", "cli.ts");
 const CONFIG_DOC = join(REPO_ROOT, "docs", "configuration.md");
 const PROTOCOL_DOC = join(REPO_ROOT, "docs", "implement-fully-protocol.md");
 const TROUBLESHOOTING_DOC = join(REPO_ROOT, "docs", "troubleshooting.md");
-const B80_DOC = join(REPO_ROOT, "docs", "roadmap", "b80-orchestrator-capability-map.md");
+const B80_DOC_CANDIDATES = [
+  join(REPO_ROOT, "docs", "roadmap", "done", "b80-orchestrator-capability-map.md"),
+  join(REPO_ROOT, "docs", "roadmap", "b80-orchestrator-capability-map.md"),
+];
+const B80_DOC = B80_DOC_CANDIDATES.find((p) => existsSync(p)) ?? B80_DOC_CANDIDATES[0]!;
 const LCA_DEV_SKILL = join(REPO_ROOT, ".cursor", "skills", "lca-dev", "SKILL.md");
+const README_DOC = join(REPO_ROOT, "README.md");
 
 const PIPELINE_OUTCOMES: readonly PipelineOutcome[] = [
   "running",
@@ -242,11 +247,26 @@ describe("b81 operator documentation contracts", () => {
     expect(b80).toMatch(/Status:\*\* Planned/);
   });
 
-  it("lca-dev points at watch outcome without claiming b80 runtime", () => {
+  it("lca-dev points at watch outcome and capability routing", () => {
     expect(lcaDev).toContain("max watch");
     expect(lcaDev).toContain("max pipeline-stop");
     expect(lcaDev).toContain("outcome: green");
     expect(lcaDev).toMatch(/do not treat `runs` as the pipeline supervisor/);
-    expect(lcaDev).not.toContain("max capabilities --json");
+    expect(lcaDev).toContain("max capabilities --json");
+    expect(lcaDev).toContain("max-orchestrate");
+    expect(lcaDev).toMatch(/do not treat this skill as a second catalog/);
+  });
+
+  it("exported docs name capability entry and JSON fallbacks", () => {
+    const readme = readDoc(README_DOC);
+    expect(readme).toContain("max capabilities --json");
+    expect(readme).toContain("--workspace");
+    expect(readme).toContain("max status --json");
+    expect(readme).toContain("max list --json");
+    expect(readme).toContain("max-orchestrate");
+
+    expect(troubleshooting).toContain("max capabilities --json");
+    expect(troubleshooting).toContain("max-orchestrate");
+    expect(troubleshooting).toContain("max skills install");
   });
 });

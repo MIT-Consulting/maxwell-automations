@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { FeatureQueueEntry, Run } from "@lca/shared";
 import {
+  emptyQueueEntryDetail,
+  type FeatureQueueEntry,
+  type Run,
+} from "@lca/shared";
+import {
+  readQueueEntryDetail,
   readQueuePreviewFields,
   selectQueuePreview,
   visibleQueuePreviews,
@@ -25,6 +30,7 @@ function entry(
     startedAt: null,
     settledAt: null,
     updatedAt: NOW,
+    entryDetail: emptyQueueEntryDetail(),
     ...overrides,
   };
 }
@@ -56,6 +62,38 @@ function row(overrides: Partial<FeatureQueueEntryRow> & Pick<FeatureQueueEntryRo
 }
 
 describe("b72 queue preview", () => {
+  it("selectQueuePreview copies entryDetail, createdAt, and afterStates", () => {
+    const docPath = "docs/roadmap/b87/00-index.md";
+    const customCreatedAt = "2026-02-15T12:00:00.000Z";
+    const entries = [
+      entry({
+        id: "e1",
+        featureId: "a",
+        position: 1,
+        state: "queued",
+        createdAt: customCreatedAt,
+        after: ["dep-done", "dep-missing"],
+        entryDetail: {
+          ...emptyQueueEntryDetail(),
+          featureDocPath: docPath,
+        },
+      }),
+      entry({
+        id: "dep-done-row",
+        featureId: "dep-done",
+        position: 1,
+        state: "done",
+      }),
+    ];
+    const preview = selectQueuePreview({ entries, slotBusy: false });
+    expect(preview[0]?.entryDetail.featureDocPath).toBe(docPath);
+    expect(preview[0]?.createdAt).toBe(customCreatedAt);
+    expect(preview[0]?.afterStates).toEqual([
+      { featureId: "dep-done", state: "done" },
+      { featureId: "dep-missing", state: "missing" },
+    ]);
+  });
+
   it("selectQueuePreview orders by position and omits terminal or run-bound rows", () => {
     const entries = [
       entry({ id: "e3", featureId: "c", position: 3, state: "queued" }),
@@ -241,11 +279,131 @@ describe("b72 queue preview", () => {
     });
   });
 
-  it("toFeatureQueueEntry copies slug and summary without kickoff", () => {
-    const mapped = toFeatureQueueEntry(row({ id: "q1" }));
+  it("readQueueEntryDetail parses profile, role models, controls, and featureIndex", () => {
+    const kickoff = JSON.stringify({
+      automationId: "a",
+      roleModels: {
+        implementer: { id: "impl-1" },
+        planner: { id: "plan-1" },
+        researcher: { id: "res-1" },
+        zcustom: { id: "z-1" },
+        empty: { id: "  " },
+      },
+      variables: {
+        featureIndex: " docs/roadmap/b87/00-index.md ",
+        roleModelProfileId: " fast-moderate ",
+        planningDepth: "jit",
+        approvalPolicy: "none",
+        researchApprovalPolicy: "before-planning",
+        loopMode: "normal",
+      },
+    });
+    expect(readQueueEntryDetail(kickoff)).toEqual({
+      featureDocPath: "docs/roadmap/b87/00-index.md",
+      roleModelProfileId: "fast-moderate",
+      roleModels: [
+        { role: "researcher", modelId: "res-1" },
+        { role: "planner", modelId: "plan-1" },
+        { role: "implementer", modelId: "impl-1" },
+        { role: "zcustom", modelId: "z-1" },
+      ],
+      planningDepth: "jit",
+      approvalPolicy: "none",
+      researchApprovalPolicy: "before-planning",
+      loopMode: "normal",
+      then: null,
+    });
+  });
+
+  it("readQueueEntryDetail returns nulls for corrupt JSON and empty roleModels object", () => {
+    expect(readQueueEntryDetail("{")).toEqual(emptyQueueEntryDetail());
+    expect(
+      readQueueEntryDetail(
+        JSON.stringify({ automationId: "a", roleModels: {}, variables: {} })
+      )
+    ).toMatchObject({
+      roleModels: [],
+      featureDocPath: null,
+    });
+    expect(
+      readQueueEntryDetail(JSON.stringify({ automationId: "a", variables: {} }))
+    ).toMatchObject({ roleModels: null });
+  });
+
+  it("toFeatureQueueEntry copies slug, summary, and entryDetail without kickoff", () => {
+    const mapped = toFeatureQueueEntry(
+      row({
+        id: "q1",
+        kickoff_json: JSON.stringify({
+          automationId: "auto-1",
+          roleModels: { planner: { id: "p1" } },
+          variables: {
+            featureSlug: "b72-slug",
+            idea: "First line summary\nSECRET_IDEA_BODY stays off the wire",
+            featureIndex: "docs/roadmap/b72/00-index.md",
+            planningDepth: "jit",
+          },
+        }),
+      })
+    );
     expect(mapped.featureSlug).toBe("b72-slug");
     expect(mapped.summary).toBe("First line summary");
     expect(mapped).not.toHaveProperty("kickoff");
+    expect(mapped).not.toHaveProperty("idea");
+    expect(JSON.stringify(mapped)).not.toContain("SECRET_IDEA_BODY");
+    expect(mapped.entryDetail.featureDocPath).toBe(
+      "docs/roadmap/b72/00-index.md"
+    );
+    expect(mapped.entryDetail.planningDepth).toBe("jit");
+    expect(mapped.entryDetail.roleModels).toEqual([
+      { role: "planner", modelId: "p1" },
+    ]);
+  });
+
+  it("toFeatureQueueEntry still returns the row when kickoff_json is corrupt", () => {
+    const mapped = toFeatureQueueEntry(row({ id: "q-bad", kickoff_json: "{" }));
+    expect(mapped.id).toBe("q-bad");
+    expect(mapped.entryDetail).toEqual(emptyQueueEntryDetail());
+    expect(mapped.featureSlug).toBeNull();
+    expect(mapped).not.toHaveProperty("kickoff");
+  });
+
+  it("visibleQueuePreviews search ignores model id not in slug or summary", () => {
+    const entries = [
+      entry({
+        id: "e1",
+        featureId: "a",
+        position: 1,
+        state: "queued",
+        featureSlug: "alpha-slug",
+        summary: "alpha idea",
+        entryDetail: {
+          ...emptyQueueEntryDetail(),
+          roleModels: [{ role: "planner", modelId: "secret-model-xyz" }],
+        },
+      }),
+    ];
+    const runs: Pick<Run, "workspaceId" | "status" | "pipeline">[] = [];
+
+    expect(
+      visibleQueuePreviews({
+        entries,
+        runs,
+        workspaceId: WS,
+        workspaceOrder: [WS],
+        search: "secret-model-xyz",
+      })
+    ).toHaveLength(0);
+
+    expect(
+      visibleQueuePreviews({
+        entries,
+        runs,
+        workspaceId: WS,
+        workspaceOrder: [WS],
+        search: "alpha",
+      })
+    ).toHaveLength(1);
   });
 
   it("visibleQueuePreviews filters workspace and search", () => {

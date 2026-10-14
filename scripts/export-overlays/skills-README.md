@@ -13,6 +13,7 @@ Logic. Tagged in lockstep with
 | `implement-fully` | Kick off the multi-run implement-fully pipeline (`/implement-fully`). |
 | `plan-implement-fully` | Deep/Guided planning contracts for implement-fully. |
 | `max-setup` | Register, upgrade, diagnose, and adopt workspaces via CLI output. |
+| `max-orchestrate` | Kick off and supervise Max work via `max capabilities --json`. |
 
 ## Install
 

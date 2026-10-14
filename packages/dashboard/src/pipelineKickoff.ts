@@ -179,6 +179,7 @@ export function assembleKickoffPayload(args: {
   roleProfileId?: string;
   researchApprovalPolicy?: ImplementFullyResearchApprovalPolicy;
   loopMode?: ImplementFullyLoopMode;
+  then?: string;
 }): TriggerRunRequest {
   validateFeatureSlugIdea(args.feature, args.slug, args.idea);
   let variables = buildKickoffVariables(
@@ -187,7 +188,8 @@ export function assembleKickoffPayload(args: {
     args.idea.trim(),
     args.profileId ?? DEFAULT_IMPLEMENT_FULLY_PLANNING_PROFILE_ID,
     args.researchApprovalPolicy ?? "none",
-    args.loopMode ?? "normal"
+    args.loopMode ?? "normal",
+    args.then ?? "none"
   );
   assertVariablesMatchRequired(
     variables,

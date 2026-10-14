@@ -13,10 +13,13 @@ import {
   DEFAULT_IMPLEMENT_FULLY_PLANNING_PROFILE_ID,
   DEFAULT_ROLE_MODEL_PROFILE_ID,
   IMPLEMENT_FULLY_PIPELINE_ID,
+  GENERATED_CONFIG_KEY_PREFIX,
   KickoffError,
+  assertThenTargetAllowed,
   assertVariablesMatchRequired,
   buildKickoffVariables,
   findActivePipelineBlocker,
+  findActiveThenTailBlocker,
   modelSelectionKey,
   resolvePlanningControls,
   resolvePlanningProfile,
@@ -30,6 +33,7 @@ import {
   type PipelineModelRole,
   type ProvisionPipelineWorkersResponse,
   type ResolveImplementFullyKickoffResponse,
+  type Automation,
   type TriggerRunRequest,
   type Workspace,
   type Run,
@@ -193,7 +197,7 @@ function InlineResetButton({
 
 export function PipelineKickoffModal({
   workspaces,
-  runs,
+  runs: _runs,
   defaultWorkspaceId,
   onClose,
   onStarted,
@@ -239,6 +243,11 @@ export function PipelineKickoffModal({
   const [researchApprovalPolicy, setResearchApprovalPolicy] =
     useState<ImplementFullyResearchApprovalPolicy>("none");
   const [execute, setExecute] = useState(false);
+  const [thenKey, setThenKey] = useState("none");
+  const [thenOptions, setThenOptions] = useState<Automation[]>([]);
+  const [thenOptionsError, setThenOptionsError] = useState<string | null>(
+    null
+  );
   const [force, setForce] = useState(false);
   const [phase, setPhase] = useState<Phase>("what");
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -337,6 +346,48 @@ export function PipelineKickoffModal({
       cancelled = true;
     };
   }, [workspaceId, readinessReport]);
+
+  useEffect(() => {
+    if (!workspaceId) {
+      setThenOptions([]);
+      setThenOptionsError(null);
+      setThenKey("none");
+      return;
+    }
+    let cancelled = false;
+    void api
+      .listAutomations()
+      .then((all) => {
+        if (cancelled) return;
+        const filtered = all.filter(
+          (automation) =>
+            automation.workspaceId === workspaceId &&
+            automation.enabled &&
+            automation.archivedAt == null &&
+            !automation.configKey.startsWith(GENERATED_CONFIG_KEY_PREFIX)
+        );
+        setThenOptions(filtered);
+        setThenOptionsError(null);
+        setThenKey((prev) =>
+          prev !== "none" &&
+          !filtered.some((automation) => automation.configKey === prev)
+            ? "none"
+            : prev
+        );
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setThenOptions([]);
+          setThenKey("none");
+          setThenOptionsError(
+            err instanceof Error ? err.message : String(err)
+          );
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [workspaceId]);
 
   const modelOptions = useMemo(
     () => models.map((m) => m.id).filter(Boolean),
@@ -535,6 +586,8 @@ export function PipelineKickoffModal({
     let resolvedTriple: ResolveImplementFullyKickoffResponse;
     let effectivePolicy: ImplementFullyResearchApprovalPolicy = "none";
     let facts: KickoffReviewFacts;
+    let guardRuns: Run[] = [];
+    let guardAutomations: Automation[] = [];
     try {
       resolvedTriple = await api.resolveImplementFullyKickoff(resolveRequest);
       validateFeatureSlugIdea(
@@ -551,13 +604,30 @@ export function PipelineKickoffModal({
         roleDefaults: base,
         researchApprovalPolicy,
       }).effectivePolicy;
+      [guardRuns, guardAutomations] = await Promise.all([
+        api.listRuns(),
+        api.listAutomations(),
+      ]);
+      const workspaceAutomations = guardAutomations.filter(
+        (automation) => automation.workspaceId === workspaceId
+      );
+      assertThenTargetAllowed(
+        thenKey,
+        workspaceAutomations.map((automation) => ({
+          configKey: automation.configKey,
+          archivedAt: automation.archivedAt,
+          workspaceId: automation.workspaceId,
+        })),
+        workspaceId
+      );
       const variables = buildKickoffVariables(
         resolvedTriple.featureId,
         resolvedTriple.featureSlug,
         resolvedTriple.idea,
         profileId,
         effectivePolicy,
-        loopModeControl.effectiveLoopMode
+        loopModeControl.effectiveLoopMode,
+        thenKey
       );
       assertVariablesMatchRequired(
         variables,
@@ -592,7 +662,27 @@ export function PipelineKickoffModal({
       const pipelineAutomationIds = new Set(
         dry.plan.items.map((i) => i.automationId)
       );
-      const blocker = findActivePipelineBlocker(runs, pipelineAutomationIds);
+      const workspaceRuns = guardRuns.filter((run) => run.workspaceId === workspaceId);
+      const workspaceAutomations = guardAutomations
+        .filter((automation) => automation.workspaceId === workspaceId)
+        .map((automation) => ({
+          id: automation.id,
+          configKey: automation.configKey,
+        }));
+      const pipelineBlocker = findActivePipelineBlocker(
+        workspaceRuns,
+        pipelineAutomationIds
+      );
+      const thenTailBlocker = findActiveThenTailBlocker(
+        workspaceRuns.map((run) => ({
+          id: run.id,
+          parentRunId: run.parentRunId,
+          automationId: run.automationId,
+          status: run.status,
+        })),
+        workspaceAutomations
+      );
+      const blocker = pipelineBlocker ?? thenTailBlocker;
       if (blocker && !force) {
         setBlockerNote(
           `Active pipeline run ${blocker.id} on automation ${blocker.automationId} (status=${blocker.status}). Enable “Start anyway” to force, or wait for it to finish.`
@@ -615,6 +705,7 @@ export function PipelineKickoffModal({
         roleProfileId,
         researchApprovalPolicy: effectivePolicy,
         loopMode: loopModeControl.effectiveLoopMode,
+        then: thenKey,
       });
       setDryPlan(dry);
       setKickoff(payload);
@@ -1049,6 +1140,44 @@ export function PipelineKickoffModal({
                   )}
                 </span>
               </label>
+
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="kickoff-then" className="text-sm font-medium">
+                  After the gate
+                </Label>
+                <p className="m-0 text-xs text-muted-foreground">
+                  Optionally run one workspace automation as a normal chain after
+                  a green final-gate. The pipeline still never pushes.
+                </p>
+                {thenOptionsError ? (
+                  <p className="m-0 text-xs text-destructive">
+                    {thenOptionsError}
+                  </p>
+                ) : null}
+                <Select
+                  value={thenKey}
+                  onValueChange={(value) => {
+                    setThenKey(value);
+                    clearReviewArtifacts();
+                    setValidationError(null);
+                  }}
+                >
+                  <SelectTrigger id="kickoff-then" className="w-full">
+                    <SelectValue placeholder="Nothing" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Nothing</SelectItem>
+                    {thenOptions.map((automation) => (
+                      <SelectItem
+                        key={automation.id}
+                        value={automation.configKey}
+                      >
+                        {automation.name} ({automation.configKey})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </>
           )}
 
@@ -1351,6 +1480,12 @@ export function PipelineKickoffModal({
                     <p className="m-0">
                       Going hands-off: implements and commits each phase
                       automatically, one review at the end.
+                    </p>
+                  )}
+                  {thenKey !== "none" && (
+                    <p className="m-0">
+                      After the gate:{" "}
+                      <span className="font-medium">{thenKey}</span>
                     </p>
                   )}
                   {reviewFacts && (

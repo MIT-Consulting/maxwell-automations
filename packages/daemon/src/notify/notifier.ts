@@ -3,9 +3,11 @@ import type {
   AlertNotifyEvent,
   NtfyNotifySettings,
   ResolvedNotifyEventPrefs,
+  WakeHookEvent,
 } from "@lca/shared";
 import notifier from "node-notifier";
 import { NtfyTransport } from "./ntfy-transport.js";
+import type { WakeHookDispatcher } from "./wake-hooks.js";
 
 export type NotifierOptions = {
   /** Base dashboard URL (no trailing slash), e.g. http://127.0.0.1:3747 */
@@ -126,6 +128,7 @@ export class Notifier {
   private readonly ntfy: NtfyTransport;
   private eventPrefs: ResolvedNotifyEventPrefs;
   private ntfySettings?: NtfyNotifySettings;
+  private wakeHooks?: WakeHookDispatcher;
 
   constructor(private readonly options: NotifierOptions) {
     this.eventPrefs = options.eventPrefs;
@@ -144,6 +147,27 @@ export class Notifier {
     this.eventPrefs = settings.eventPrefs;
     this.ntfySettings = settings.ntfy;
     this.ntfy.setSettings(settings.ntfy);
+  }
+
+  /** Attach the orchestrator wake-hook dispatcher (b83). */
+  setWakeHookDispatcher(dispatcher: WakeHookDispatcher | undefined): void {
+    this.wakeHooks = dispatcher;
+  }
+
+  private fireRunWake(runId: string, event: WakeHookEvent): void {
+    try {
+      this.wakeHooks?.dispatchRunEvent(runId, event);
+    } catch {
+      // Never let wake hooks interfere with notify/run lifecycle.
+    }
+  }
+
+  private fireQueueWake(facts: { workspaceId: string }): void {
+    try {
+      this.wakeHooks?.dispatchQueueEvent(facts);
+    } catch {
+      // Never let wake hooks interfere with notify/run lifecycle.
+    }
   }
 
   /** Operator test send — bypasses per-event prefs; respects LCA_NO_NTFY. */
@@ -258,6 +282,7 @@ export class Notifier {
     const message = truncateMessage(question, 220);
     this.notifyToast("needs_input", `run ${runId}`, title, message, deepLink);
     this.publishNtfy("needs_input", title, message, runId);
+    this.fireRunWake(runId, "needs_input");
   }
 
   runFailed(runId: string, reason: string): void {
@@ -303,6 +328,7 @@ export class Notifier {
       deepLink
     );
     this.publishNtfy("plan_approval_required", title, message, runId);
+    this.fireRunWake(runId, "needs_input");
   }
 
   /** Loud UX/design approval gate — OS toast plus prefs-gated ntfy (reserved seam). */
@@ -360,6 +386,7 @@ export class Notifier {
       deepLink
     );
     this.publishNtfy("pipeline_complete", title, message, runId);
+    this.fireRunWake(runId, "green");
   }
 
   /** Loud pipeline blocked/deadlock — OS toast plus prefs-gated ntfy. */
@@ -382,10 +409,12 @@ export class Notifier {
       deepLink
     );
     this.publishNtfy("pipeline_blocked", title, message, runId);
+    this.fireRunWake(runId, "blocked");
   }
 
   /** Loud serial queue drain — OS toast plus prefs-gated ntfy (one per batch). */
   queueBatchComplete(facts: {
+    workspaceId: string;
     workspaceLabel: string;
     doneCount: number;
     failedCount: number;
@@ -420,6 +449,7 @@ export class Notifier {
       deepLink
     );
     this.publishNtfyWithClick("queue_batch_complete", title, message, deepLink);
+    this.fireQueueWake({ workspaceId: facts.workspaceId });
   }
 
   /**
@@ -474,6 +504,7 @@ export class Notifier {
       deepLink
     );
     this.publishNtfy("pipeline_halt_unrecovered", title, message, runId);
+    this.fireRunWake(runId, "halted");
   }
 
   /**

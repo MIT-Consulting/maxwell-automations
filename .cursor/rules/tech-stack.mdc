@@ -80,6 +80,10 @@ stable implementation-facing names for the same product.
   checkout) and the user-level `max-setup` skill (`max skills install`). Kickoff
   agents stop on unregistered workspaces — `max-setup` owns registration, not
   ambient implementation.
+- **Orchestration / kickoff selection / supervision:** user-level
+  `max-orchestrate` skill or `max capabilities --json` (`--workspace` when known).
+  Outside agents select surfaces by `bestFor` and follow playbooks — do not
+  duplicate the catalog in chat.
 - **Feature status / recent shipped work:** `docs/roadmap/00-index.md` is canonical;
   do not infer status from README blurbs or an unarchived feature folder.
 - **Role-model recipes / `--role-profile`:** `docs/configuration.md`

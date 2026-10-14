@@ -7,6 +7,7 @@ export const TRIGGER_ICON: Record<TriggerConfig["type"], string> = {
   "file-watch": "👁",
   command: "⌘",
   manual: "✋",
+  webhook: "🪝",
 };
 
 /** Icons for run-level trigger kinds (includes chain and git:* variants). */
@@ -28,6 +29,8 @@ export function triggerLabel(trigger: TriggerConfig): string {
       return `command · ${trigger.command}`;
     case "manual":
       return "manual";
+    case "webhook":
+      return `webhook · ${trigger.name}`;
   }
 }
 

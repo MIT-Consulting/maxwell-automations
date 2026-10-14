@@ -1284,6 +1284,27 @@ export class RunStore {
       ) as LineageLifecycleEventRow[];
   }
 
+  /** `run.message` rows for a lineage (not in `PIPELINE_LIFECYCLE_EVENTS`). */
+  listRunMessageEventsForLineage(
+    rootRunId: string,
+    options?: { since?: number; limit?: number }
+  ): LineageLifecycleEventRow[] {
+    const since = options?.since ?? 0;
+    const limit = options?.limit ?? 500;
+    return this.db
+      .prepare(
+        `SELECT e.id, e.run_id, e.event_type, e.payload, e.created_at
+         FROM run_events e
+         INNER JOIN runs r ON r.id = e.run_id
+         WHERE (r.id = ? OR r.chain_root_run_id = ?)
+           AND e.id > ?
+           AND e.event_type = 'run.message'
+         ORDER BY e.id ASC
+         LIMIT ?`
+      )
+      .all(rootRunId, rootRunId, since, limit) as LineageLifecycleEventRow[];
+  }
+
   /** Highest persisted `run_events.id`, or 0 when the table is empty. */
   getMaxGlobalEventId(): number {
     const row = this.db

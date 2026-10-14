@@ -81,17 +81,20 @@ describe("parseListArgs", () => {
   it("accepts --workspace with a value", () => {
     expect(parseListArgs(["--workspace", "my-workspace"])).toEqual({
       workspaceQuery: "my-workspace",
+      json: false,
     });
   });
 
   it("accepts -w with a value", () => {
     expect(parseListArgs(["-w", WS_A])).toEqual({
       workspaceQuery: WS_A,
+      json: false,
     });
   });
 
   it("returns undefined when no workspace flag is present", () => {
-    expect(parseListArgs([])).toEqual({ workspaceQuery: undefined });
+    expect(parseListArgs([])).toEqual({ workspaceQuery: undefined, json: false });
+    expect(parseListArgs(["--json"])).toEqual({ workspaceQuery: undefined, json: true });
   });
 
   it("throws when --workspace is missing a value", () => {

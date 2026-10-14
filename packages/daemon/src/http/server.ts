@@ -25,6 +25,7 @@ import {
   resolveModelMutationInput,
   IMPLEMENT_FULLY_PIPELINE_ID,
   enqueueFeatureSchema,
+  moveFeatureQueueEntrySchema,
   type DeleteRunsResponse,
   type AttachmentRef,
   type GeneratedWorkerPlan,
@@ -64,6 +65,8 @@ import {
   type ChainRunContext,
   type McpOverlay,
   type NotifySettingsPublic,
+  type WakeHooksPublic,
+  type WebhookTriggersPublic,
   type UpdateNotifySettingsInput,
   type UpdateSnapshot,
   type WorkspaceChatDefaults,
@@ -79,12 +82,20 @@ import {
   type RunEngine,
 } from "../runs/engine.js";
 import type { GitTriggerPayload, TriggerManager } from "../triggers/manager.js";
+import {
+  handleWebhookTrigger,
+  isWebhookTriggerPost,
+} from "../triggers/webhook.js";
 import { formatIssues } from "../config/parse.js";
 import { provisionGeneratedWorkers } from "../config/generated-workers.js";
 import {
   reconcileConfig,
   workspaceIdFromPath,
 } from "../config/reconcile.js";
+import {
+  buildCapabilitiesDocument,
+  buildWorkspaceCapabilityContext,
+} from "../capabilities.js";
 import {
   computeWorkspacePreconditions,
   getPipelineDefinition,
@@ -262,6 +273,17 @@ export type HttpServerDeps = {
     getPublic: () => NotifySettingsPublic;
     patch: (body: UpdateNotifySettingsInput) => NotifySettingsPublic;
     testSend: () => Promise<{ ok: true } | { ok: false; error: string }>;
+  };
+  /** Hot-reloadable wake hooks (GET/test). Omitted in tests that skip wake hooks. */
+  wakeHooks?: {
+    getPublic: () => WakeHooksPublic;
+    testSend: (
+      hookId: string
+    ) => Promise<{ ok: true } | { ok: false; error: string } | null>;
+  };
+  /** Webhook trigger status (GET). Omitted in tests that skip webhook doctor. */
+  webhookTriggers?: {
+    getPublic: () => WebhookTriggersPublic;
   };
   /** Approved-release cache (b68). Omitted in tests that don't exercise it. */
   updates?: {
@@ -843,6 +865,8 @@ export function startHttpServer(deps: HttpServerDeps): Promise<HttpServer> {
   const pipelineFeedWaitRegistry = new PipelineFeedWaitRegistry(events, runStore);
   const featureQueue = deps.featureQueue ?? new FeatureQueueStore(db);
   const notify = deps.notify;
+  const wakeHooks = deps.wakeHooks;
+  const webhookTriggers = deps.webhookTriggers;
   const attachmentStore = new AttachmentStore(db);
   const modelCatalog = new ModelCatalog({
     apiKey,
@@ -950,6 +974,17 @@ export function startHttpServer(deps: HttpServerDeps): Promise<HttpServer> {
     // The static SPA shell and `/health` carry no run data and must stay loadable
     // so a remote browser can boot the app and render the token prompt.
     const reqPath = (req.url ?? "/").split("?")[0];
+    const method = req.method ?? "GET";
+    if (isWebhookTriggerPost(method, reqPath)) {
+      await handleWebhookTrigger({
+        req,
+        res,
+        pathname: reqPath,
+        db,
+        engine,
+      });
+      return;
+    }
     if (reqPath.startsWith("/api/")) {
       const tokenResult = checkControlToken({
         isLoopbackSource,
@@ -974,7 +1009,6 @@ export function startHttpServer(deps: HttpServerDeps): Promise<HttpServer> {
         return;
       }
     }
-    const method = req.method ?? "GET";
     if (
       !isCsrfSafe(
         {
@@ -1013,6 +1047,66 @@ export function startHttpServer(deps: HttpServerDeps): Promise<HttpServer> {
 
       if (method === "GET" && url.pathname === "/api/status") {
         sendJson(res, 200, statusPayload());
+        return;
+      }
+
+      if (method === "GET" && url.pathname === "/api/capabilities") {
+        if (url.searchParams.has("workspace")) {
+          sendJson(res, 400, {
+            error:
+              "use workspaceId with the exact registered id; friendly workspace names are resolved by the CLI",
+          });
+          return;
+        }
+        const workspaceIdParam = url.searchParams.get("workspaceId");
+        const snap = updates?.snapshot();
+        const daemonVersion = snap?.running ?? {
+          version: "0.0.0-dev",
+          channel: "unknown" as const,
+        };
+        const roleModelSettings = {
+          pipelineRoleModels: settings.pipelineRoleModels,
+          pipelineRoleModelProfiles: settings.pipelineRoleModelProfiles,
+          defaultPipelineRoleModelProfile:
+            settings.defaultPipelineRoleModelProfile,
+        };
+        const buildInput = { daemonVersion, roleModelSettings };
+        if (!workspaceIdParam) {
+          sendJson(res, 200, buildCapabilitiesDocument(buildInput));
+          return;
+        }
+        const workspaceLookup = assertRunnableWorkspace(
+          store,
+          workspaceIdParam
+        );
+        if (!workspaceLookup?.path) {
+          sendJson(res, 404, { error: "workspace not found" });
+          return;
+        }
+        const workspaceRow = store
+          .listWorkspaces()
+          .find((entry) => entry.id === workspaceIdParam);
+        const workspaceName =
+          workspaceRow?.name?.trim() ||
+          workspaceRow?.path ||
+          workspaceIdParam;
+        const { workspace, readinessReport } = buildWorkspaceCapabilityContext({
+          workspaceId: workspaceIdParam,
+          workspacePath: workspaceLookup.path,
+          workspaceName,
+          readinessBounds: {
+            maxBytes: settings.maxFileViewerBytes,
+            maxEntries: settings.maxFileViewerEntries,
+          },
+          runStore,
+          dashboardStore: store,
+          featureQueue,
+        });
+        sendJson(
+          res,
+          200,
+          buildCapabilitiesDocument(buildInput, workspace, readinessReport)
+        );
         return;
       }
 
@@ -1063,6 +1157,34 @@ export function startHttpServer(deps: HttpServerDeps): Promise<HttpServer> {
           return;
         }
         sendJson(res, 502, { ok: false, error: result.error });
+        return;
+      }
+
+      if (wakeHooks && method === "GET" && url.pathname === "/api/settings/wake-hooks") {
+        sendJson(res, 200, wakeHooks.getPublic());
+        return;
+      }
+
+      if (
+        webhookTriggers &&
+        method === "GET" &&
+        url.pathname === "/api/triggers/webhooks"
+      ) {
+        sendJson(res, 200, webhookTriggers.getPublic());
+        return;
+      }
+
+      const wakeHookTestMatch = url.pathname.match(
+        /^\/api\/settings\/wake-hooks\/([^/]+)\/test$/
+      );
+      if (wakeHooks && method === "POST" && wakeHookTestMatch) {
+        const hookId = decodeURIComponent(wakeHookTestMatch[1] ?? "");
+        const result = await wakeHooks.testSend(hookId);
+        if (result == null) {
+          sendJson(res, 404, { error: "not found" });
+          return;
+        }
+        sendJson(res, 200, result);
         return;
       }
 
@@ -1889,6 +2011,49 @@ export function startHttpServer(deps: HttpServerDeps): Promise<HttpServer> {
           entries: rows.map(toFeatureQueueEntry),
         });
         return;
+      }
+
+      const featureQueueMoveMatch = url.pathname.match(
+        /^\/api\/feature-queue\/([^/]+)\/move$/
+      );
+      if (featureQueueMoveMatch && method === "POST") {
+        const entryId = decodeURIComponent(featureQueueMoveMatch[1]!);
+        const body = await readJson<unknown>(req);
+        const parsed = moveFeatureQueueEntrySchema.safeParse(body);
+        if (!parsed.success) {
+          sendJson(res, 400, { error: formatIssues(parsed.error.issues) });
+          return;
+        }
+        const outcome = featureQueue.moveEntry(entryId, parsed.data);
+        switch (outcome.status) {
+          case "missing":
+            sendJson(res, 404, { error: "feature queue entry not found" });
+            return;
+          case "anchor-missing":
+            sendJson(res, 404, {
+              error: `feature queue entry not found: ${outcome.anchorId}`,
+            });
+            return;
+          case "same-anchor":
+            sendJson(res, 400, {
+              error: "cannot use the same entry as its own move anchor",
+            });
+            return;
+          case "not-movable":
+          case "bad-anchor":
+            sendJson(res, 409, {
+              error: "feature queue entry is not movable",
+            });
+            return;
+          case "ahead-of-dependency":
+            sendJson(res, 409, {
+              error: `cannot move ahead of unfinished dependency ${outcome.featureId}`,
+            });
+            return;
+          case "moved":
+            sendJson(res, 200, { entry: toFeatureQueueEntry(outcome.row) });
+            return;
+        }
       }
 
       const featureQueueMatch = url.pathname.match(/^\/api\/feature-queue\/([^/]+)$/);

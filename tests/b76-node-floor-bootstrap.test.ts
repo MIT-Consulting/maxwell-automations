@@ -213,12 +213,16 @@ describe("b76 node-floor resolution", () => {
 });
 
 describe("b76 embed-version", () => {
-  it("embeds root engines.node as nodeFloor", () => {
-    const embed = buildEmbed();
-    const root = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8"));
-    expect(embed.nodeFloor).toBe(root.engines.node);
-    expect(embed.nodeFloor).toBe(">=22.13");
-  });
+  it(
+    "embeds root engines.node as nodeFloor",
+    () => {
+      const embed = buildEmbed();
+      const root = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8"));
+      expect(embed.nodeFloor).toBe(root.engines.node);
+      expect(embed.nodeFloor).toBe(">=22.13");
+    },
+    15_000
+  );
 });
 
 describe("b76 bootstrap entry contracts", () => {

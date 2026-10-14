@@ -90,9 +90,11 @@ export function buildVitestInvocations(cliArgs = [], opts = {}) {
   const vitestEntry = resolveVitestEntry(opts.vitestEntry);
 
   if (cliArgs.length === 0) {
+    // Vitest file filters are substring matches, so the real-git lane would
+    // also pick up stale copies under the gitignored public export tree.
+    const exportExclude = ["--exclude", ".export-public/**"];
     const excludeArgs = [
-      "--exclude",
-      ".export-public/**",
+      ...exportExclude,
       ...REAL_GIT_LANE_FILES.flatMap((file) => ["--exclude", file]),
     ];
     return [
@@ -106,6 +108,7 @@ export function buildVitestInvocations(cliArgs = [], opts = {}) {
           vitestEntry,
           "run",
           ...REAL_GIT_LANE_FILES,
+          ...exportExclude,
           ...REAL_GIT_SERIAL_ARGS,
         ],
       },

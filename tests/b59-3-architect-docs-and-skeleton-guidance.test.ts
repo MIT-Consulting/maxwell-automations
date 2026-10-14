@@ -25,6 +25,7 @@ const BASE_VARIABLES: Omit<ChainVariables, "planningDepth" | "approvalPolicy"> =
     idea: "Architect/planner role split",
     researchApprovalPolicy: "none",
     loopMode: "normal",
+    then: "none",
   };
 
 function vars(planningDepth: "jit" | "full"): ChainVariables {

@@ -1,6 +1,13 @@
 import { IMPLEMENT_FULLY_PIPELINE_ID } from "./types/api.js";
-import type { FeatureQueueEntry } from "./types/feature-queue.js";
+import type { FeatureQueueEntryDetail } from "./types/feature-queue.js";
+import {
+  emptyQueueEntryDetail,
+  type FeatureQueueEntry,
+  type FeatureQueueEntryState,
+} from "./types/feature-queue.js";
 import type { Run } from "./types/entities.js";
+
+export type { FeatureQueueEntryDetail } from "./types/feature-queue.js";
 
 export type QueuePreviewReadiness = "next" | "waiting" | "blocked" | "starting";
 
@@ -12,6 +19,12 @@ export type QueuePreviewItem = {
   summary: string | null;
   position: number;
   after: string[];
+  entryDetail: FeatureQueueEntryDetail;
+  createdAt: string;
+  afterStates: {
+    featureId: string;
+    state: FeatureQueueEntryState | "missing";
+  }[];
   readiness: QueuePreviewReadiness;
   reason: string | null;
 };
@@ -69,7 +82,129 @@ export function readQueuePreviewFields(kickoffJson: string): {
   return { featureSlug, summary };
 }
 
-function newestRowForFeature(
+const QUEUE_ENTRY_ROLE_ORDER = [
+  "researcher",
+  "architect",
+  "planner",
+  "implementer",
+  "reviewer",
+  "docs",
+  "gatekeeper",
+] as const;
+
+const ROLE_ORDER_INDEX = new Map<string, number>(
+  QUEUE_ENTRY_ROLE_ORDER.map((role, index) => [role, index])
+);
+
+function trimStringField(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function readThenVariable(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed === "none") {
+    return null;
+  }
+  return trimmed;
+}
+
+function modelIdFromSelection(value: unknown): string | null {
+  if (typeof value === "string") {
+    return trimStringField(value);
+  }
+  if (typeof value === "object" && value !== null) {
+    return trimStringField((value as Record<string, unknown>).id);
+  }
+  return null;
+}
+
+function sortRoleModelPairs(
+  pairs: { role: string; modelId: string }[]
+): { role: string; modelId: string }[] {
+  return [...pairs].sort((a, b) => {
+    const ai = ROLE_ORDER_INDEX.get(a.role);
+    const bi = ROLE_ORDER_INDEX.get(b.role);
+    if (ai !== undefined && bi !== undefined) {
+      return ai - bi;
+    }
+    if (ai !== undefined) {
+      return -1;
+    }
+    if (bi !== undefined) {
+      return 1;
+    }
+    return a.role.localeCompare(b.role);
+  });
+}
+
+export function readQueueEntryDetail(
+  kickoffJson: string
+): FeatureQueueEntryDetail {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(kickoffJson);
+  } catch {
+    return emptyQueueEntryDetail();
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    return emptyQueueEntryDetail();
+  }
+  const root = parsed as Record<string, unknown>;
+  const variables = root.variables;
+  if (typeof variables !== "object" || variables === null) {
+    return emptyQueueEntryDetail();
+  }
+  const vars = variables as Record<string, unknown>;
+
+  let roleModels: FeatureQueueEntryDetail["roleModels"] = null;
+  const rawRoleModels = root.roleModels;
+  if (rawRoleModels === undefined) {
+    roleModels = null;
+  } else if (typeof rawRoleModels !== "object" || rawRoleModels === null) {
+    roleModels = null;
+  } else if (Object.keys(rawRoleModels).length === 0) {
+    roleModels = [];
+  } else {
+    const pairs: { role: string; modelId: string }[] = [];
+    for (const [role, selection] of Object.entries(rawRoleModels)) {
+      const modelId = modelIdFromSelection(selection);
+      if (modelId) {
+        pairs.push({ role, modelId });
+      }
+    }
+    roleModels = sortRoleModelPairs(pairs);
+  }
+
+  return {
+    featureDocPath: trimStringField(vars.featureIndex),
+    roleModelProfileId: trimStringField(vars.roleModelProfileId),
+    roleModels,
+    planningDepth: trimStringField(vars.planningDepth),
+    approvalPolicy: trimStringField(vars.approvalPolicy),
+    researchApprovalPolicy: trimStringField(vars.researchApprovalPolicy),
+    loopMode: trimStringField(vars.loopMode),
+    then: readThenVariable(vars.then),
+  };
+}
+
+function buildAfterStates(
+  entries: readonly FeatureQueueEntry[],
+  after: readonly string[]
+): QueuePreviewItem["afterStates"] {
+  return after.map((depId) => ({
+    featureId: depId,
+    state: newestRowForFeature(entries, depId)?.state ?? "missing",
+  }));
+}
+
+export function newestRowForFeature(
   entries: readonly FeatureQueueEntry[],
   featureId: string
 ): FeatureQueueEntry | undefined {
@@ -133,6 +268,9 @@ export function selectQueuePreview(input: {
       summary: entry.summary ?? null,
       position: entry.position,
       after: entry.after,
+      entryDetail: entry.entryDetail ?? emptyQueueEntryDetail(),
+      createdAt: entry.createdAt,
+      afterStates: buildAfterStates(entries, entry.after),
     };
 
     if (entry.state === "blocked") {

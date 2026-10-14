@@ -94,3 +94,44 @@ automations:
     model: claude-4.6-sonnet-medium-thinking
     prompt: |
       Use /review-speed-implementation to audit the implementation against the plan.
+
+  # Optional implement-fully successor (b66): kick off with `--then ship` or pick
+  # "After the gate" in the dashboard. Fires as an ordinary chain after a green
+  # final-gate; the pipeline itself never pushes. Leave commented/disabled so it
+  # does not run on load.
+  # - id: ship
+  #   name: Ship after gate
+  #   enabled: false
+  #   trigger:
+  #     type: manual
+  #   model: composer-2.5-fast
+  #   prompt: |
+  #     Push and apply migrations after the feature gate passes.
+  #   chain:
+  #     next: ado-pr
+  #     when: completed
+  #
+  # - id: ado-pr
+  #   name: ADO PR follow-up
+  #   enabled: false
+  #   trigger:
+  #     type: manual
+  #   model: composer-2.5-fast
+  #   prompt: |
+  #     Open or update the work-item PR.
+
+  # Inbound webhook example (b84) — comments only; do not copy-paste armed.
+  # Set LCA_WEBHOOK_SHIP_SECRET in ~/.cursor-local-automations/.env, then
+  # POST /api/triggers/webhook/ship-hook with X-LCA-Signature + X-LCA-Delivery-Id.
+  # See docs/configuration.md § Webhook trigger.
+  # - id: ship-hook
+  #   name: Ship on external signal
+  #   enabled: false
+  #   trigger:
+  #     type: webhook
+  #     name: ship-hook
+  #     secretEnv: LCA_WEBHOOK_SHIP_SECRET
+  #     fields: [title, ref]
+  #   model: composer-2.5-fast
+  #   prompt: |
+  #     Review the webhook payload and summarize next steps.

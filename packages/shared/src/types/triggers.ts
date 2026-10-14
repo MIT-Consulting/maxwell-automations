@@ -24,9 +24,17 @@ export type ManualTriggerConfig = {
   type: "manual";
 };
 
+export type WebhookTriggerConfig = {
+  type: "webhook";
+  name: string;
+  secretEnv: string;
+  fields?: string[];
+};
+
 export type TriggerConfig =
   | CronTriggerConfig
   | GitTriggerConfig
   | FileWatchTriggerConfig
   | CommandTriggerConfig
-  | ManualTriggerConfig;
+  | ManualTriggerConfig
+  | WebhookTriggerConfig;

@@ -165,12 +165,12 @@ function createEnv() {
 }
 
 describe("b81 pipeline steering", () => {
-  it("migrates to SCHEMA_VERSION 24 with pipeline_directives table", () => {
+  it("migrates to SCHEMA_VERSION >= 24 with pipeline_directives table", () => {
     const root = mkdtempSync(join(tmpdir(), "lca-b81-mig-"));
     const db = openDatabase(join(root, "state.sqlite"));
     migrate(db);
     expect(schemaVersion(db)).toBe(SCHEMA_VERSION);
-    expect(SCHEMA_VERSION).toBe(24);
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(24);
     const table = db
       .prepare(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='pipeline_directives'"
@@ -178,7 +178,7 @@ describe("b81 pipeline steering", () => {
       .get();
     expect(table).toBeTruthy();
     migrate(db);
-    expect(schemaVersion(db)).toBe(24);
+    expect(schemaVersion(db)).toBe(SCHEMA_VERSION);
     db.close();
     rmSync(root, { recursive: true, force: true });
   });

@@ -2,7 +2,10 @@ import {
   classifyFeatureQueueOutcome,
   featureQueueFailureDetail,
   findActivePipelineBlocker,
+  findActiveThenTailBlocker,
   type RunStatus,
+  type ThenTailBlockerAutomation,
+  type ThenTailBlockerRun,
 } from "@lca/shared";
 import type { DaemonEventBus } from "../events.js";
 import {
@@ -170,6 +173,7 @@ export class FeatureQueueRunner {
     }
     try {
       this.notifier.queueBatchComplete({
+        workspaceId,
         workspaceLabel: this.getWorkspaceLabel(workspaceId),
         ...facts,
       });
@@ -215,18 +219,72 @@ export class FeatureQueueRunner {
     if (this.settleSource?.hasTransitionInFlight(workspaceId)) {
       return true;
     }
-    const runs = this.store.listActiveRunsForWorkspace(workspaceId);
+    const runsForWalk = this.collectActiveRunsWithAncestors(workspaceId);
+    const automations = this.collectAutomationsForRuns(runsForWalk);
     const pipelineAutomationIds = pipelineWorkerAutomationIds(workspaceId);
-    return (
+    if (
       findActivePipelineBlocker(
-        runs.map((row) => ({
+        runsForWalk.map((row) => ({
           id: row.id,
-          automationId: row.automation_id,
+          automationId: row.automationId,
           status: row.status,
         })),
         pipelineAutomationIds
       ) != null
-    );
+    ) {
+      return true;
+    }
+    return findActiveThenTailBlocker(runsForWalk, automations) != null;
+  }
+
+  private collectActiveRunsWithAncestors(
+    workspaceId: string
+  ): ThenTailBlockerRun[] {
+    const activeRuns = this.store.listActiveRunsForWorkspace(workspaceId);
+    const byId = new Map<string, ThenTailBlockerRun>();
+
+    for (const active of activeRuns) {
+      let current = this.store.getRun(active.id);
+      while (current) {
+        if (!byId.has(current.id)) {
+          byId.set(current.id, {
+            id: current.id,
+            parentRunId: current.parent_run_id,
+            automationId: current.automation_id,
+            status: current.status,
+          });
+        }
+        if (!current.parent_run_id) {
+          break;
+        }
+        current = this.store.getRun(current.parent_run_id);
+      }
+    }
+
+    return [...byId.values()];
+  }
+
+  private collectAutomationsForRuns(
+    runs: ReadonlyArray<ThenTailBlockerRun>
+  ): ThenTailBlockerAutomation[] {
+    const automations: ThenTailBlockerAutomation[] = [];
+    const seen = new Set<string>();
+    for (const run of runs) {
+      if (seen.has(run.automationId)) {
+        continue;
+      }
+      seen.add(run.automationId);
+      const automation = this.store.getAutomationByIdIncludingArchived(
+        run.automationId
+      );
+      if (automation) {
+        automations.push({
+          id: automation.id,
+          configKey: automation.config_key,
+        });
+      }
+    }
+    return automations;
   }
 
   private recoverFailedEntry(run: RunRow): boolean {

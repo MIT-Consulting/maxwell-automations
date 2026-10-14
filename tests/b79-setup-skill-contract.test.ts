@@ -113,11 +113,13 @@ describe("b79 max-setup skill contract", () => {
   it("includes max-setup in install and export skill lists", () => {
     expect(installSourceNames(DEFAULT_SOURCES)).toEqual([
       "implement-fully",
+      "max-orchestrate",
       "max-setup",
       "plan-implement-fully",
     ]);
     expect([...SKILL_SOURCES].sort()).toEqual([
       "implement-fully",
+      "max-orchestrate",
       "max-setup",
       "plan-implement-fully",
     ]);

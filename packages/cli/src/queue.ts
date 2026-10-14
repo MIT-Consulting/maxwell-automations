@@ -1,5 +1,6 @@
 import {
   IMPLEMENT_FULLY_PIPELINE_ID,
+  newestRowForFeature,
   type FeatureQueueEntry,
 } from "@lca/shared";
 import {
@@ -16,7 +17,7 @@ import {
 const QUEUE_USAGE =
   "Usage: lca queue add --feature <feature-id> [options]\n" +
   "       lca queue add --idea <text> [options]\n" +
-  "       lca queue list | rm <id> | clear";
+  "       lca queue list [--json | -v] | rm <id> | move <id> [--before|--after <id>|--top] | clear";
 
 function parseQueueAddArgs(args: string[]): {
   impl: ImplementFullyArgs;
@@ -72,13 +73,86 @@ function formatOriginTag(entry: FeatureQueueEntry): string {
 }
 
 function printQueueEntry(entry: FeatureQueueEntry): void {
-  const detail = `${formatOriginTag(entry)}${entry.detail ?? ""}`.trim();
+  let detail = `${formatOriginTag(entry)}${entry.detail ?? ""}`.trim();
+  const thenKey = entry.entryDetail.then;
+  if (thenKey) {
+    detail = detail.length > 0 ? `${detail} then ${thenKey}` : `then ${thenKey}`;
+  }
   console.log(
     `  ${entry.state.padEnd(12)} ${entry.featureId.padEnd(8)} ` +
       `${formatDependencies(entry.after).padEnd(16)} ` +
       `${formatShortRunId(entry.runId).padEnd(8)} ` +
       detail
   );
+}
+
+function formatRecipeLine(detail: FeatureQueueEntry["entryDetail"]): string {
+  if (detail.roleModelProfileId) {
+    return `recipe: ${detail.roleModelProfileId}`;
+  }
+  if (detail.roleModels && detail.roleModels.length > 0) {
+    return `recipe: ${detail.roleModels
+      .map(({ role, modelId }) => `${role}=${modelId}`)
+      .join(", ")}`;
+  }
+  return "recipe: (none)";
+}
+
+function formatAfterLines(
+  entry: FeatureQueueEntry,
+  entries: readonly FeatureQueueEntry[]
+): string[] {
+  if (entry.after.length === 0) {
+    return [];
+  }
+  return entry.after.map((depId) => {
+    const newest = newestRowForFeature(entries, depId);
+    const state = newest?.state ?? "missing";
+    return `after ${depId} (${state})`;
+  });
+}
+
+function printQueueEntryVerbose(
+  entry: FeatureQueueEntry,
+  entries: readonly FeatureQueueEntry[]
+): void {
+  printQueueEntry(entry);
+  const detail = entry.entryDetail;
+  const lines = [
+    `  doc: ${detail.featureDocPath ?? "(none)"}`,
+    `  ${formatRecipeLine(detail)}`,
+    `  planningDepth: ${detail.planningDepth ?? "(none)"}`,
+    `  approvalPolicy: ${detail.approvalPolicy ?? "(none)"}`,
+    `  researchApprovalPolicy: ${detail.researchApprovalPolicy ?? "(none)"}`,
+    `  loopMode: ${detail.loopMode ?? "(none)"}`,
+    ...(detail.then ? [`  then: ${detail.then}`] : []),
+    ...formatAfterLines(entry, entries).map((line) => `  ${line}`),
+    `  position: ${entry.position}`,
+    `  createdAt: ${entry.createdAt}`,
+  ];
+  for (const line of lines) {
+    console.log(line);
+  }
+}
+
+function parseQueueListArgs(args: string[]): {
+  json: boolean;
+  verbose: boolean;
+} {
+  let json = false;
+  let verbose = false;
+  for (const arg of args) {
+    if (arg === "--json") {
+      json = true;
+      continue;
+    }
+    if (arg === "-v") {
+      verbose = true;
+      continue;
+    }
+    throw new DaemonError(`Unknown queue list option "${arg}".\n${QUEUE_USAGE}`);
+  }
+  return { json, verbose };
 }
 
 async function cmdQueueAdd(
@@ -150,8 +224,16 @@ async function cmdQueueAdd(
   console.log(`  state: ${entry.state}`);
 }
 
-async function cmdQueueList(client: DaemonClient): Promise<void> {
+async function cmdQueueList(
+  client: DaemonClient,
+  args: string[] = []
+): Promise<void> {
+  const { json, verbose } = parseQueueListArgs(args);
   const entries = await client.listFeatureQueue();
+  if (json) {
+    console.log(JSON.stringify({ entries }, null, 2));
+    return;
+  }
   if (entries.length === 0) {
     console.log("(no queued features)");
     return;
@@ -161,8 +243,86 @@ async function cmdQueueList(client: DaemonClient): Promise<void> {
       `${"dependencies".padEnd(16)} ${"run".padEnd(8)} detail`
   );
   for (const entry of entries) {
-    printQueueEntry(entry);
+    if (verbose) {
+      printQueueEntryVerbose(entry, entries);
+      console.log("");
+    } else {
+      printQueueEntry(entry);
+    }
   }
+}
+
+function parseQueueMoveArgs(args: string[]): {
+  query: string;
+  body: { before: string } | { after: string } | { top: true };
+} {
+  if (args.length === 0) {
+    throw new DaemonError(`Usage: lca queue move <id> [--before|--after <id>|--top]\n${QUEUE_USAGE}`);
+  }
+  const query = args[0]!;
+  let before: string | undefined;
+  let after: string | undefined;
+  let top = false;
+  for (let i = 1; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "--before") {
+      const value = args[++i];
+      if (!value) {
+        throw new DaemonError("--before requires a value");
+      }
+      before = value;
+      continue;
+    }
+    if (arg === "--after") {
+      const value = args[++i];
+      if (!value) {
+        throw new DaemonError("--after requires a value");
+      }
+      after = value;
+      continue;
+    }
+    if (arg === "--top") {
+      top = true;
+      continue;
+    }
+    throw new DaemonError(`Unknown queue move option "${arg}".\n${QUEUE_USAGE}`);
+  }
+  const flagCount = [before != null, after != null, top].filter(Boolean).length;
+  if (flagCount === 0) {
+    throw new DaemonError(
+      `queue move requires exactly one of --before, --after, or --top.\n${QUEUE_USAGE}`
+    );
+  }
+  if (flagCount > 1) {
+    throw new DaemonError(
+      `queue move accepts only one of --before, --after, or --top.\n${QUEUE_USAGE}`
+    );
+  }
+  if (before != null) {
+    return { query, body: { before } };
+  }
+  if (after != null) {
+    return { query, body: { after } };
+  }
+  return { query, body: { top: true } };
+}
+
+async function cmdQueueMove(
+  client: DaemonClient,
+  args: string[]
+): Promise<void> {
+  const { query, body } = parseQueueMoveArgs(args);
+  const subjectId = await resolveQueueEntryId(client, query);
+  let moveBody = body;
+  if ("before" in body) {
+    moveBody = { before: await resolveQueueEntryId(client, body.before) };
+  } else if ("after" in body) {
+    moveBody = { after: await resolveQueueEntryId(client, body.after) };
+  }
+  const entry = await client.moveFeatureQueueEntry(subjectId, moveBody);
+  console.log(`Moved ${entry.featureId} to position ${entry.position}`);
+  console.log(`  id:    ${entry.id}`);
+  console.log(`  state: ${entry.state}`);
 }
 
 async function cmdQueueRm(
@@ -197,7 +357,7 @@ export async function cmdQueue(
   const [sub, ...rest] = args;
   switch (sub ?? "list") {
     case "list":
-      await cmdQueueList(client);
+      await cmdQueueList(client, rest);
       return;
     case "add":
       await cmdQueueAdd(client, rest);
@@ -205,12 +365,15 @@ export async function cmdQueue(
     case "rm":
       await cmdQueueRm(client, rest[0]);
       return;
+    case "move":
+      await cmdQueueMove(client, rest);
+      return;
     case "clear":
       await cmdQueueClear(client);
       return;
     default:
       throw new DaemonError(
-        `Unknown queue subcommand "${sub}". Try: add | list | rm | clear`
+        `Unknown queue subcommand "${sub}". Try: add | list | rm | move | clear`
       );
   }
 }

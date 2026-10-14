@@ -47,11 +47,13 @@ import {
   type UpdateNotifySettingsInput,
   type UpdateWorkspaceChatDefaultsRequest,
   type NotifySettingsPublic,
+  type WakeHooksPublic,
   type Workspace,
   type WorkspaceChatDefaults,
   type WorkspaceArtifact,
   type DaemonStatus,
   type FeatureQueueEntry,
+  type MoveFeatureQueueRequest,
   type UpdateSnapshot,
   type WorkspaceFileContentResponse,
   type WorkspaceMutationResponse,
@@ -235,6 +237,29 @@ export const api = {
       await request("/api/feature-queue")
     );
     return data.entries;
+  },
+
+  async cancelFeatureQueueEntry(id: string): Promise<FeatureQueueEntry> {
+    const data = await jsonOrThrow<{ entry: FeatureQueueEntry }>(
+      await request(`/api/feature-queue/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      })
+    );
+    return data.entry;
+  },
+
+  async moveFeatureQueueEntry(
+    id: string,
+    body: MoveFeatureQueueRequest
+  ): Promise<FeatureQueueEntry> {
+    const data = await jsonOrThrow<{ entry: FeatureQueueEntry }>(
+      await request(`/api/feature-queue/${encodeURIComponent(id)}/move`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      })
+    );
+    return data.entry;
   },
 
   async listWorkspaces(): Promise<Workspace[]> {
@@ -684,6 +709,23 @@ export const api = {
       /* ignore */
     }
     return { ok: false, error: `${res.status} ${res.statusText}` };
+  },
+
+  async getWakeHooks(): Promise<WakeHooksPublic> {
+    return jsonOrThrow<WakeHooksPublic>(
+      await request("/api/settings/wake-hooks")
+    );
+  },
+
+  async testWakeHook(
+    hookId: string
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    return jsonOrThrow<{ ok: true } | { ok: false; error: string }>(
+      await request(
+        `/api/settings/wake-hooks/${encodeURIComponent(hookId)}/test`,
+        { method: "POST" }
+      )
+    );
   },
 
   async createChat(

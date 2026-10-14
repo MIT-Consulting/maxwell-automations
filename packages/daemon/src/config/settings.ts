@@ -14,6 +14,10 @@ import {
   type NtfyNotifySettings,
   type PipelineModelRole,
   type ResolvedNotifySettings,
+  type ResolvedPipelineRoleModelProfile,
+  type ResolvedWakeHookConfig,
+  type WakeHookConfig,
+  wakeHooksSchema,
 } from "@lca/shared";
 import { GLOBAL_CONFIG_PATH } from "../paths.js";
 import { parseGlobalConfig } from "./parse.js";
@@ -60,10 +64,7 @@ export type ResolvedSettings = {
    * Normalized named role-model recipes. Empty when YAML omits profiles.
    * Loaded once at startup; changing requires `lca restart`.
    */
-  pipelineRoleModelProfiles: Record<
-    string,
-    Partial<Record<PipelineModelRole, ModelSelection>>
-  >;
+  pipelineRoleModelProfiles: Record<string, ResolvedPipelineRoleModelProfile>;
   /**
    * Resolved default named profile id, or null when unset/unknown.
    * Loaded once at startup; changing requires `lca restart`.
@@ -330,33 +331,43 @@ const VALID_PROFILE_ID = /^[a-z][a-z0-9-]*$/;
 function resolvePipelineRoleModelProfiles(
   raw: DaemonSettings["pipelineRoleModelProfiles"],
   onLog?: (message: string) => void
-): Record<string, Partial<Record<PipelineModelRole, ModelSelection>>> {
-  const resolved: Record<
-    string,
-    Partial<Record<PipelineModelRole, ModelSelection>>
-  > = {};
+): Record<string, ResolvedPipelineRoleModelProfile> {
+  const resolved: Record<string, ResolvedPipelineRoleModelProfile> = {};
   if (!raw) {
     return resolved;
   }
-  for (const [profileId, profileMap] of Object.entries(raw)) {
+  for (const [profileId, entry] of Object.entries(raw)) {
     if (!VALID_PROFILE_ID.test(profileId) || profileId === "default") {
       onLog?.(
         `pipelineRoleModelProfiles.${profileId} ignored (invalid profile id)`
       );
       continue;
     }
-    resolved[profileId] = normalizePipelineRoleModels(
-      profileMap,
+    const roleRaw: PipelineRoleModelsRaw = {};
+    for (const role of PIPELINE_MODEL_ROLES) {
+      const value = entry[role];
+      if (value !== undefined) {
+        roleRaw[role] = value;
+      }
+    }
+    const roleModels = normalizePipelineRoleModels(
+      roleRaw,
       `pipelineRoleModelProfiles.${profileId}`,
       onLog
     );
+    const profile: ResolvedPipelineRoleModelProfile = { roleModels };
+    const description = entry.description?.trim();
+    if (description) {
+      profile.description = description;
+    }
+    resolved[profileId] = profile;
   }
   return resolved;
 }
 
 function resolveDefaultPipelineRoleModelProfile(
   requested: string | undefined,
-  profiles: Record<string, Partial<Record<PipelineModelRole, ModelSelection>>>,
+  profiles: Record<string, ResolvedPipelineRoleModelProfile>,
   onLog?: (message: string) => void
 ): string | null {
   if (!requested?.trim()) {
@@ -412,6 +423,63 @@ export function loadNotifySettings(
     const message = err instanceof Error ? err.message : String(err);
     options.onLog?.(`Notify settings ignored (invalid global config): ${message}`);
     return resolveNotifySettings(undefined);
+  }
+}
+
+const DEFAULT_WAKE_HOOK_COALESCE_MS = 60_000;
+const DEFAULT_WAKE_HOOK_MAX_PER_HOUR = 12;
+
+/** Materialize one wake hook with clamped defaults (b83). */
+export function resolveWakeHookConfig(hook: WakeHookConfig): ResolvedWakeHookConfig {
+  return {
+    id: hook.id,
+    sink: hook.sink,
+    ...(hook.url !== undefined ? { url: hook.url } : {}),
+    ...(hook.tokenEnv !== undefined ? { tokenEnv: hook.tokenEnv } : {}),
+    ...(hook.actorId !== undefined ? { actorId: hook.actorId } : {}),
+    events: hook.events,
+    ...(hook.workspaceIds !== undefined ? { workspaceIds: hook.workspaceIds } : {}),
+    ...(hook.featureIds !== undefined ? { featureIds: hook.featureIds } : {}),
+    coalesceMs: Math.min(
+      600_000,
+      Math.max(0, hook.coalesceMs ?? DEFAULT_WAKE_HOOK_COALESCE_MS)
+    ),
+    maxPerHour: Math.min(
+      120,
+      Math.max(1, hook.maxPerHour ?? DEFAULT_WAKE_HOOK_MAX_PER_HOUR)
+    ),
+    ...(hook.chatId !== undefined ? { chatId: hook.chatId } : {}),
+  };
+}
+
+/** Parse and default `settings.wakeHooks`; empty when absent. */
+export function resolveWakeHooks(
+  fileHooks: WakeHookConfig[] | undefined
+): ResolvedWakeHookConfig[] {
+  if (fileHooks == null || fileHooks.length === 0) {
+    return [];
+  }
+  const parsed = wakeHooksSchema.parse(fileHooks);
+  return parsed.map(resolveWakeHookConfig);
+}
+
+/**
+ * Re-read wake hooks from the global YAML without a daemon restart.
+ * Parse error → keep the previous list (caller passes fallback).
+ */
+export function loadWakeHooksSettings(
+  options: {
+    onLog?: (message: string) => void;
+    fallback?: ResolvedWakeHookConfig[];
+  } = {}
+): ResolvedWakeHookConfig[] {
+  try {
+    const fileSettings = parseGlobalConfig(GLOBAL_CONFIG_PATH).settings ?? {};
+    return resolveWakeHooks(fileSettings.wakeHooks);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    options.onLog?.(`Wake hooks ignored (invalid global config): ${message}`);
+    return options.fallback ?? [];
   }
 }
 

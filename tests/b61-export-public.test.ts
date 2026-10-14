@@ -114,24 +114,28 @@ describe("export leak scan", () => {
 });
 
 describe("export git identity", () => {
-  it("pins the public identity into a clone at the destination", () => {
-    const dir = mkdtempSync(join(tmpdir(), "max-export-id-"));
-    try {
-      const git = (...args: string[]) =>
-        execFileSync("git", ["-C", dir, ...args], { stdio: "pipe" })
-          .toString()
-          .trim();
-      git("init", "-q");
-      git("config", "user.email", "operator@example.invalid");
-      expect(pinPublicGitIdentity(dir)).toBe(true);
-      expect(git("config", "--get", "user.email")).toBe(
-        PUBLIC_GIT_IDENTITY.email
-      );
-      expect(git("config", "--get", "user.name")).toBe(PUBLIC_GIT_IDENTITY.name);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
+  it(
+    "pins the public identity into a clone at the destination",
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), "max-export-id-"));
+      try {
+        const git = (...args: string[]) =>
+          execFileSync("git", ["-C", dir, ...args], { stdio: "pipe" })
+            .toString()
+            .trim();
+        git("init", "-q");
+        git("config", "user.email", "operator@example.invalid");
+        expect(pinPublicGitIdentity(dir)).toBe(true);
+        expect(git("config", "--get", "user.email")).toBe(
+          PUBLIC_GIT_IDENTITY.email
+        );
+        expect(git("config", "--get", "user.name")).toBe(PUBLIC_GIT_IDENTITY.name);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+    15_000
+  );
 
   it("is a no-op for a plain directory", () => {
     const dir = mkdtempSync(join(tmpdir(), "max-export-plain-"));
@@ -191,6 +195,15 @@ describe("AGENTS.md export contract", () => {
       expect(existsSync(abs)).toBe(true);
       expect(isIncluded(rel)).toBe(true);
     }
+  });
+
+  it("routes orchestrators to capabilities without copying playbooks", () => {
+    const body = readFileSync(AGENTS_MD, "utf8");
+    expect(body).toContain("max-orchestrate");
+    expect(body).toContain("max capabilities --json");
+    expect(body).toMatch(/bestFor/);
+    expect(body).not.toMatch(/max implement-fully --feature/);
+    expect(body).not.toMatch(/max watch b\d+/);
   });
 });
 

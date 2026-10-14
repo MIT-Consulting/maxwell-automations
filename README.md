@@ -65,7 +65,7 @@ npm ci
 npm run build
 # ~/.cursor-local-automations/.env  →  CURSOR_API_KEY=crsr_...
 npm link -w @lca/cli    # global max/lca — or use npx lca … everywhere below
-max skills install      # or: npm run install:skill — copies max-setup + pipeline skills
+max skills install      # or: npm run install:skill — copies bundled skills (setup + orchestrate + pipeline)
 max up                  # start the daemon (required before roadmap readiness)
 max workspace add <path>   # register your project repo
 max doctor              # Environment + Roadmaps summary
@@ -81,6 +81,11 @@ max doctor <path> --json   # readiness loop (fixable_by); exit 0 = ready
 
 Fresh Cursor chats in this checkout should read [AGENTS.md](./AGENTS.md) first,
 then invoke the **`max-setup`** skill for setup, upgrade, and adoption.
+Setup-complete agents orchestrating kickoff or supervision should invoke
+**`max-orchestrate`** or run **`max capabilities --json`** (add **`--workspace`**
+when the target repo is known). For quick snapshots the map may point at
+**`max status --json`** or **`max list --json`** — details stay in the live
+capability output, not here.
 
 Check skill drift anytime: `max skills install --check`. `max update --apply` installs skills for the version it lands on.
 

@@ -5,8 +5,8 @@
  *   node scripts/install-skill.mjs --check   # report drift, exit 1 if any
  *   node scripts/install-skill.mjs --dry-run # report planned writes, write nothing
  *
- * Installs skills/implement-fully, skills/plan-implement-fully, and
- * skills/max-setup.
+ * Installs skills/implement-fully, skills/plan-implement-fully,
+ * skills/max-setup, and skills/max-orchestrate.
  * Never deletes destination files. Never touches ~/.cursor/rules/ or
  * ~/.cursor-local-automations/.
  */
@@ -32,6 +32,7 @@ export const DEFAULT_SOURCES = [
   join(REPO_ROOT, "skills", "implement-fully"),
   join(REPO_ROOT, "skills", "plan-implement-fully"),
   join(REPO_ROOT, "skills", "max-setup"),
+  join(REPO_ROOT, "skills", "max-orchestrate"),
 ];
 
 /**
@@ -199,7 +200,7 @@ export function parseInstallArgs(argv) {
       console.log(
         "Usage: node scripts/install-skill.mjs [--check|--dry-run]\n" +
           "  (default)  copy bundled skills (implement-fully, plan-implement-fully,\n" +
-          "             max-setup) → ~/.cursor/skills/<skill-name>\n" +
+          "             max-setup, max-orchestrate) → ~/.cursor/skills/<skill-name>\n" +
           "  --check    report drift; exit 1 if any skill drifts\n" +
           "  --dry-run  report planned writes; write nothing"
       );

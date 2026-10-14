@@ -13,7 +13,9 @@ import type {
   ChainRunContext,
   DaemonStatus,
   FeatureQueueEntry,
-  FeatureQueueEntryState,
+  FeatureQueueSummary,
+  WakeHookPublic,
+  WebhookTriggerPublic,
   GatekeeperResolutionSource,
   ImplementFullyLoopMode,
   PipelineHaltDiscoveryActionOutcome,
@@ -39,6 +41,7 @@ import {
   pipelineSummaryFromContext,
   resolveRoleSelectionWithFallback,
   RUN_ESCALATION_ACTIONS,
+  summarizeFeatureQueue,
   type PipelineSnapshot,
   type RoadmapFeaturePlan,
   type RoadmapFindingImpact,
@@ -175,6 +178,7 @@ export type PipelineDoctorFacts = {
   cleanupRequired: boolean;
   waveRecoveryCommand: string | null;
   loopMode: ImplementFullyLoopMode | null;
+  then: string | null;
 };
 
 export type PipelineLineageEntry = {
@@ -1109,6 +1113,27 @@ export function parseDoctorChainContext(
   return { ok: true, context: parsed as ChainRunContext };
 }
 
+function readThenFromDoctorContext(
+  parsed: ReturnType<typeof parseDoctorChainContext>
+): string | null {
+  if (parsed?.ok !== true) {
+    return null;
+  }
+  try {
+    const raw = parsed.context.variables.then;
+    if (typeof raw !== "string") {
+      return null;
+    }
+    const trimmed = raw.trim();
+    if (trimmed.length === 0 || trimmed === "none") {
+      return null;
+    }
+    return trimmed;
+  } catch {
+    return null;
+  }
+}
+
 function stepLabelFor(
   configKey: string | null | undefined,
   depth: number | null | undefined,
@@ -1263,6 +1288,7 @@ export function snapshotToDoctorFacts(
   }
 
   const loopMode = pipeline.loopMode;
+  const then = readThenFromDoctorContext(parsed);
 
   return {
     featureId: pipeline.featureId || null,
@@ -1310,6 +1336,7 @@ export function snapshotToDoctorFacts(
     cleanupRequired: waveSummary?.cleanupRequired ?? false,
     waveRecoveryCommand,
     loopMode,
+    then,
   };
 }
 
@@ -1439,6 +1466,7 @@ export function collectPipelineDoctorFacts(
       // omit when context is unusable
     }
   }
+  const then = readThenFromDoctorContext(parsed);
 
   return {
     featureId: summary?.featureId ?? null,
@@ -1479,6 +1507,7 @@ export function collectPipelineDoctorFacts(
     cleanupRequired: waveSummary?.cleanupRequired ?? false,
     waveRecoveryCommand,
     loopMode,
+    then,
   };
 }
 
@@ -1531,6 +1560,9 @@ export function formatPipelineBlockLines(facts: PipelineDoctorFacts): string[] {
   }
   if (facts.loopMode === "execute") {
     lines.push(`  loop mode:  execute`);
+  }
+  if (facts.then != null) {
+    lines.push(`  then:       ${facts.then}`);
   }
   if (facts.gatekeeperModelId != null) {
     const sourceLabel =
@@ -2035,123 +2067,38 @@ export function formatEnvironmentLines(summary: EnvironmentSummary): string[] {
   return lines;
 }
 
-export type FeatureQueueSummary = {
-  counts: Record<FeatureQueueEntryState, number>;
-  running: {
-    featureId: string;
-    runId: string;
-    origin: FeatureQueueEntry["origin"];
-    count: number;
-  } | null;
-  failed: Array<{ featureId: string; detail: string | null }>;
-  blocked: Array<{ featureId: string; detail: string | null }>;
-  nextEligibleFeatureId: string | null;
-  isEmpty: boolean;
-};
+export type { FeatureQueueSummary } from "@lca/shared";
+export { summarizeFeatureQueue } from "@lca/shared";
 
-function newestEntryByFeatureId(
-  entries: FeatureQueueEntry[],
-  workspaceId: string,
-  featureId: string
-): FeatureQueueEntry | undefined {
-  let best: FeatureQueueEntry | undefined;
-  for (const entry of entries) {
-    if (entry.workspaceId !== workspaceId || entry.featureId !== featureId) {
-      continue;
-    }
-    if (!best || entry.position > best.position) {
-      best = entry;
-    }
+export function formatWakeHookLines(hooks: readonly WakeHookPublic[]): string[] {
+  if (hooks.length === 0) {
+    return [];
   }
-  return best;
+  return hooks.map((hook) => {
+    const last = hook.lastDeliveries.at(-1);
+    const lastPart =
+      last == null
+        ? "last: (none)"
+        : `last: ${last.status}${last.error != null ? ` (${last.error})` : ""} (${last.kind})`;
+    const activityPart =
+      hook.noActorActivitySince === true
+        ? ", delivered, no actor activity since"
+        : "";
+    return `  ${hook.id}  ${hook.sink}  ${lastPart}${activityPart}`;
+  });
 }
 
-function isQueueEntryEligible(
-  entry: FeatureQueueEntry,
-  entries: FeatureQueueEntry[]
-): boolean {
-  if (entry.state !== "queued") {
-    return false;
+export function formatWebhookTriggerLines(
+  webhooks: readonly WebhookTriggerPublic[]
+): string[] {
+  if (webhooks.length === 0) {
+    return [];
   }
-  for (const depId of entry.after) {
-    const dep = newestEntryByFeatureId(entries, entry.workspaceId, depId);
-    if (!dep || dep.state !== "done") {
-      return false;
-    }
-  }
-  return true;
-}
-
-function findNextEligibleFeatureId(
-  entries: FeatureQueueEntry[]
-): string | null {
-  const byWorkspace = new Map<string, FeatureQueueEntry[]>();
-  for (const entry of entries) {
-    const list = byWorkspace.get(entry.workspaceId) ?? [];
-    list.push(entry);
-    byWorkspace.set(entry.workspaceId, list);
-  }
-  for (const workspaceEntries of byWorkspace.values()) {
-    const queued = workspaceEntries
-      .filter((e) => e.state === "queued")
-      .sort((a, b) => a.position - b.position);
-    const eligible = queued.find((entry) =>
-      isQueueEntryEligible(entry, entries)
-    );
-    if (eligible) {
-      return eligible.featureId;
-    }
-  }
-  return null;
-}
-
-/** Health-mode queue summary from listFeatureQueue (no new endpoint). */
-export function summarizeFeatureQueue(
-  entries: FeatureQueueEntry[]
-): FeatureQueueSummary {
-  const counts: Record<FeatureQueueEntryState, number> = {
-    queued: 0,
-    running: 0,
-    done: 0,
-    failed: 0,
-    blocked: 0,
-    cancelled: 0,
-  };
-  for (const entry of entries) {
-    counts[entry.state] += 1;
-  }
-
-  const runningEntries = entries.filter((e) => e.state === "running");
-  const runningEntry = runningEntries[0];
-  const running =
-    runningEntry != null
-      ? {
-          featureId: runningEntry.featureId,
-          runId: runningEntry.runId ?? "",
-          origin: runningEntry.origin ?? "queue",
-          count: runningEntries.length,
-        }
-      : null;
-
-  const failed = entries
-    .filter((e) => e.state === "failed")
-    .map((e) => ({ featureId: e.featureId, detail: e.detail }));
-  const blocked = entries
-    .filter((e) => e.state === "blocked")
-    .map((e) => ({ featureId: e.featureId, detail: e.detail }));
-
-  const active = entries.filter(
-    (e) => e.state !== "done" && e.state !== "cancelled"
-  );
-
-  return {
-    counts,
-    running,
-    failed,
-    blocked,
-    nextEligibleFeatureId: findNextEligibleFeatureId(entries),
-    isEmpty: active.length === 0,
-  };
+  return webhooks.map((wh) => {
+    const armedPart = wh.armed ? "armed" : "not armed";
+    const resultPart = wh.lastResult ?? "(none)";
+    return `  ${wh.name}  ${armedPart}  ${resultPart}`;
+  });
 }
 
 export function formatFeatureQueueLines(

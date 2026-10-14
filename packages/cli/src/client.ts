@@ -44,6 +44,9 @@ import {
   type CreateWorkspaceRequest,
   type TriggerRunRequest,
   type Workspace,
+  type CapabilitiesDocument,
+  type WakeHooksPublic,
+  type WebhookTriggersPublic,
   type WorkspaceMutationResponse,
   type WsServerMessage,
 } from "@lca/shared";
@@ -271,6 +274,14 @@ export class DaemonClient {
 
   status(): Promise<DaemonStatus> {
     return this.request("/api/status");
+  }
+
+  getCapabilities(workspaceId?: string): Promise<CapabilitiesDocument> {
+    const query =
+      workspaceId != null
+        ? `?workspaceId=${encodeURIComponent(workspaceId)}`
+        : "";
+    return this.request(`/api/capabilities${query}`);
   }
 
   checkUpdate(): Promise<UpdateSnapshot & { ok: true }> {
@@ -584,10 +595,28 @@ export class DaemonClient {
     return data.entries;
   }
 
+  getWakeHooks(): Promise<WakeHooksPublic> {
+    return this.request<WakeHooksPublic>("/api/settings/wake-hooks");
+  }
+
+  getWebhookTriggers(): Promise<WebhookTriggersPublic> {
+    return this.request<WebhookTriggersPublic>("/api/triggers/webhooks");
+  }
+
   cancelFeatureQueueEntry(id: string): Promise<FeatureQueueEntry> {
     return this.request<{ entry: FeatureQueueEntry }>(
       `/api/feature-queue/${encodeURIComponent(id)}`,
       { method: "DELETE" }
+    ).then((data) => data.entry);
+  }
+
+  moveFeatureQueueEntry(
+    id: string,
+    body: { before: string } | { after: string } | { top: true }
+  ): Promise<FeatureQueueEntry> {
+    return this.postJson<{ entry: FeatureQueueEntry }>(
+      `/api/feature-queue/${encodeURIComponent(id)}/move`,
+      body
     ).then((data) => data.entry);
   }
 

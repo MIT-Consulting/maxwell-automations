@@ -48,7 +48,7 @@ export function useRoadmapReadinessSummaries(
           res.workspaces.map((summary) => [summary.workspaceId, summary])
         );
         setMap(
-          new Map(
+          new Map<string, RoadmapSummaryEntry>(
             ids.map((id) => {
               const summary = byId.get(id);
               if (summary) {

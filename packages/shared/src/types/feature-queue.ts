@@ -16,6 +16,30 @@ export const FEATURE_QUEUE_ENTRY_ORIGINS = ["queue", "direct"] as const;
 export type FeatureQueueEntryOrigin =
   (typeof FEATURE_QUEUE_ENTRY_ORIGINS)[number];
 
+export type FeatureQueueEntryDetail = {
+  featureDocPath: string | null;
+  roleModelProfileId: string | null;
+  roleModels: { role: string; modelId: string }[] | null;
+  planningDepth: string | null;
+  approvalPolicy: string | null;
+  researchApprovalPolicy: string | null;
+  loopMode: string | null;
+  then: string | null;
+};
+
+export function emptyQueueEntryDetail(): FeatureQueueEntryDetail {
+  return {
+    featureDocPath: null,
+    roleModelProfileId: null,
+    roleModels: null,
+    planningDepth: null,
+    approvalPolicy: null,
+    researchApprovalPolicy: null,
+    loopMode: null,
+    then: null,
+  };
+}
+
 export type FeatureQueueEntry = {
   id: string;
   workspaceId: string;
@@ -28,6 +52,7 @@ export type FeatureQueueEntry = {
   detail: string | null;
   featureSlug?: string | null;
   summary?: string | null;
+  entryDetail: FeatureQueueEntryDetail;
   createdAt: string;
   startedAt: string | null;
   settledAt: string | null;
@@ -40,3 +65,8 @@ export type EnqueueFeatureRequest = {
   after?: string[];
   kickoff: TriggerRunRequest;
 };
+
+export type MoveFeatureQueueRequest =
+  | { before: string }
+  | { after: string }
+  | { top: true };

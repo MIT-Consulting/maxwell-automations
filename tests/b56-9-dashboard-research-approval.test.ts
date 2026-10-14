@@ -316,7 +316,7 @@ describe("b56.9 PipelineKickoffModal source contracts", () => {
       /assembleKickoffPayload\(\{[\s\S]*researchApprovalPolicy:\s*effectivePolicy/
     );
     expect(modalSrc).toMatch(
-      /buildKickoffVariables\(\s*resolvedTriple\.featureId,\s*resolvedTriple\.featureSlug,\s*resolvedTriple\.idea,\s*profileId,\s*effectivePolicy,\s*loopModeControl\.effectiveLoopMode\s*\)/
+      /buildKickoffVariables\(\s*resolvedTriple\.featureId,\s*resolvedTriple\.featureSlug,\s*resolvedTriple\.idea,\s*profileId,\s*effectivePolicy,\s*loopModeControl\.effectiveLoopMode,\s*thenKey\s*\)/
     );
   });
 

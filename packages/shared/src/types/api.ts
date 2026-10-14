@@ -22,9 +22,13 @@ import type {
   VersionIdentity,
 } from "../version.js";
 import type {
+  RoadmapReadinessImpactCounts,
   RoadmapReadinessReport,
+  RoadmapReadinessState,
   RoadmapReadinessSummariesResponse,
 } from "../roadmap-readiness.js";
+import type { FeatureQueueEntryState } from "./feature-queue.js";
+import type { PipelineOutcome } from "../pipeline-outcome.js";
 import type {
   RoadmapFixPlan,
   RoadmapFixPlanDraft,
@@ -339,6 +343,8 @@ export type PipelineRoleModelProfile = {
   id: string;
   label: string;
   roleModels: Partial<Record<PipelineModelRole, ModelSelection>>;
+  /** Operator calibration prose from settings; absent when unset. */
+  description?: string;
 };
 
 /** Namespace prefix for provisioned pipeline worker `config_key` values. */
@@ -370,7 +376,7 @@ export type ImplementFullyLoopWorkerKey =
 
 /**
  * Required kickoff variables for implement-fully.
- * All ten must arrive whole — `renderChainTemplate` does not compute or concatenate.
+ * All eleven must arrive whole — `renderChainTemplate` does not compute or concatenate.
  * No phase-scoped name: chain context is immutable, so the current phase lives in the
  * feature tracker, not in variables.
  * `planningDepth` / `approvalPolicy` / `researchApprovalPolicy` are durable controls;
@@ -387,6 +393,7 @@ export const IMPLEMENT_FULLY_VARIABLES = [
   "approvalPolicy",
   "researchApprovalPolicy",
   "loopMode",
+  "then",
 ] as const;
 
 export type ImplementFullyVariable =
@@ -1130,3 +1137,151 @@ export type WsServerMessage =
   | { type: "chat_input_request"; chatId: string; request: InputRequest }
   | { type: "chat_session"; chatId: string; session: ChatSession }
   | { type: "chats_deleted"; chatIds: string[] };
+
+/** Effect class for orchestrator policy checks (b80). */
+export type CapabilitySurfaceEffect =
+  | "read"
+  | "steer"
+  | "start"
+  | "destructive";
+
+export type CapabilityAvailability = {
+  status: "available" | "blocked";
+  reason: string;
+};
+
+export type CapabilitySurface = {
+  id: string;
+  verb: string;
+  bestFor: string;
+  notFor: string;
+  needs: string[];
+  produces: string[];
+  effect: CapabilitySurfaceEffect;
+  availability?: CapabilityAvailability;
+};
+
+export type CapabilityProfile = {
+  id: string;
+  label: string;
+  roleModels: Partial<Record<PipelineModelRole, ModelSelection>>;
+  /** Operator calibration from settings `description`; not inferred from id. */
+  bestFor?: string;
+};
+
+export type CapabilityPlanningEntry = {
+  id: ImplementFullyPlanningProfileId;
+  label: string;
+  description: string;
+  planningDepth: ImplementFullyPlanningDepth;
+  approvalPolicy: ImplementFullyApprovalPolicy;
+  budgetFormula: string;
+  executeBudgetFormula: string;
+};
+
+export type CapabilityStatusDomain =
+  | "run"
+  | "pipeline"
+  | "queue"
+  | "input"
+  | "halt";
+
+export type CapabilityStatusEntry = {
+  domain: CapabilityStatusDomain;
+  id: string;
+  terminal: boolean;
+  meaning: string;
+  verb: string;
+};
+
+export type CapabilityPlaybook = {
+  id: string;
+  when: string;
+  steps: string[];
+  doneSignal: string;
+  dontStopEarlyBecause: string;
+  availability?: CapabilityAvailability;
+};
+
+export type CapabilitiesReadinessBlocker = {
+  code: string;
+  message: string;
+};
+
+export type CapabilitiesReadinessSummary = {
+  state: RoadmapReadinessState;
+  counts: RoadmapReadinessImpactCounts;
+  blockers: CapabilitiesReadinessBlocker[];
+};
+
+export type CapabilitiesActivePipelineSummary = {
+  active: boolean;
+  rootRunId: string | null;
+  featureId: string | null;
+  outcome: PipelineOutcome | null;
+  waiting: boolean;
+  halt: boolean;
+};
+
+export type CapabilitiesQueueSummary = {
+  counts: Record<FeatureQueueEntryState, number>;
+  running: { featureId: string; runId: string } | null;
+  failedFeatureIds: string[];
+  blockedFeatureIds: string[];
+  nextEligibleFeatureId: string | null;
+  isEmpty: boolean;
+};
+
+export type CapabilitiesWorkspaceContext = {
+  id: string;
+  name: string;
+  readiness: CapabilitiesReadinessSummary;
+  pipeline: CapabilitiesActivePipelineSummary;
+  queue: CapabilitiesQueueSummary;
+};
+
+export type CapabilityPointer = {
+  id: string;
+  path: string;
+  note: string;
+};
+
+export type CapabilitiesVersion = {
+  daemon: VersionIdentity;
+  cli?: VersionIdentity;
+  skills?: "in-sync" | "drift" | "unavailable";
+};
+
+/** Daemon-owned orchestrator capability document (b80). */
+export type CapabilitiesDocument = {
+  version: CapabilitiesVersion;
+  surfaces: CapabilitySurface[];
+  profiles: CapabilityProfile[];
+  planning: CapabilityPlanningEntry[];
+  statuses: CapabilityStatusEntry[];
+  playbooks: CapabilityPlaybook[];
+  antiPatterns: string[];
+  pointers: CapabilityPointer[];
+  workspace?: CapabilitiesWorkspaceContext;
+};
+
+/** Last HTTP outcome for a webhook name (in-memory ring, not delivery ids). */
+export type WebhookLastResult =
+  | "accepted"
+  | "rejected"
+  | "duplicate"
+  | "unavailable";
+
+/** Public webhook summary for GET /api/triggers/webhooks. */
+export type WebhookTriggerPublic = {
+  name: string;
+  armed: boolean;
+  lastResult?: WebhookLastResult;
+  lastAt?: string;
+  deliveryCount: number;
+};
+
+/** GET /api/triggers/webhooks response shape. */
+export type WebhookTriggersPublic = {
+  webhooks: WebhookTriggerPublic[];
+};

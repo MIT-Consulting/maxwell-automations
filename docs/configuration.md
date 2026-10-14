@@ -66,7 +66,7 @@ A configured workspace path that does not exist on disk logs a clear warning.
 | `maxFileViewerBytes` | `2097152` (2 MiB) | `65536` (64 KiB) | `LCA_MAX_FILE_VIEWER_BYTES` | Max bytes returned inline for a workspace file preview. Oversize text is truncated with a flag; binary content is never returned inline. Restart required. |
 | `maxFileViewerEntries` | `1000` | `50` | `LCA_MAX_FILE_VIEWER_ENTRIES` | Max directory entries returned by the file-viewer listing API. Restart required. |
 | `pipelineRoleModels` | — (empty map) | — | — | Default model recipe for pipeline kickoff: required `planner` / `implementer` / `reviewer` / `docs` entries (each a scalar model id or structured selection), plus optional `researcher` (when set, chain starts at `generated:research`), optional `architect` (when set, owns `plan-skeleton`; when unset, falls back to the concrete planner selection), and `gatekeeper` (when set, owns terminal `final-gate`; when unset, falls back to the concrete reviewer selection). Also the synthetic profile id `default` when named profiles are configured. No env override. Restart required. |
-| `pipelineRoleModelProfiles` | — (empty map) | — | — | Named role-model recipes for kickoff (e.g. `cheap`, `quality`). Each value is a map with the same shape as `pipelineRoleModels`. Profile ids must match `^[a-z][a-z0-9-]*$`; id `default` is reserved — do not define it here. No env override. Restart required. |
+| `pipelineRoleModelProfiles` | — (empty map) | — | — | Named role-model recipes for kickoff (e.g. `fast-moderate`, `quality`). Each profile is a map with the same role keys as `pipelineRoleModels`, plus an optional string **`description`** (operator prose surfaced on `max capabilities --json` as `profiles[].bestFor`). Profile ids must match `^[a-z][a-z0-9-]*$`; id `default` is reserved — do not define it here. No env override. Restart required until b74 ships profile hot reload. |
 | `defaultPipelineRoleModelProfile` | _(unset)_ | — | — | Optional id pre-selecting a named profile at kickoff. Omit → synthetic `default` (`pipelineRoleModels`). Must reference a key in `pipelineRoleModelProfiles` or `default`. No env override. Restart required. |
 | `pipelineResumeLookbackMs` | `86400000` (24h) | `0` | `LCA_PIPELINE_RESUME_LOOKBACK_MS` | How far back (ms) the boot pass looks for (1) `completed` context-aware runs whose chain transition was lost to a restart and (2) failed-halt startup recovery candidates. `0` disables both boot passes. Restart required (`lca restart` after changing). |
 | `pipelineAutoEscalate` | `true` | — | `LCA_PIPELINE_AUTO_ESCALATE` | When `true`, the daemon may auto-escalate a narrow allowlisted late `sdk_error` halt (see [troubleshooting](./troubleshooting.md) and [implement-fully protocol](./implement-fully-protocol.md)). Kill switch: `LCA_PIPELINE_AUTO_ESCALATE=0` (or `false`). Does not widen spawn/resume/stall retries or wave/track recovery. Restart required (`lca restart` after changing). |
@@ -74,6 +74,7 @@ A configured workspace path that does not exist on disk logs a clear warning.
 | `pipelineHaltDiscovery` | `true` | — | `LCA_PIPELINE_HALT_DISCOVERY` | When `true` (default), an unrecovered pipeline halt may spawn a best-effort halt-discovery advisory that parks a no-timeout recommendation card for the operator. Kill switch: `LCA_PIPELINE_HALT_DISCOVERY=0` (or `false`). Discovery has no escalation or pipeline-transition authority; the halted source and `lca escalate` remain authoritative. Restart required (`lca restart` after changing). |
 | `pipelineModelPreflight` | `true` | — | `LCA_PIPELINE_MODEL_PREFLIGHT` | When `true` (default), a pipeline kickoff (CLI, dashboard, or feature queue) sends a one-line prompt to each distinct role model before the root run is created. If the backend rejects a selection, the kickoff is refused with the SDK's message and the roles that use it — nothing is enqueued. Cursor's catalog can list variants the local runtime rejects (seen with `grok-4.7` `context=500k`), which otherwise fail later as a zero-activity `sdk_error`. Passing selections are cached for 6 hours; failures are always re-probed. A probe with no result inside 60s is logged and allowed. Adds a few seconds to kickoff. Kill switch: `LCA_PIPELINE_MODEL_PREFLIGHT=0`. Restart required. |
 | `notify.ntfy` | _(unset / disabled)_ | — | — | Optional ntfy phone-notify **connection** (topic / server / token). Per-event delivery is under `notify.events` — see [Phone notify (ntfy)](#phone-notify-ntfy). No env override for topic/token. **`settings.notify` hot-reloads** (Settings → Alerts Save or YAML watcher); no restart for notify prefs/connection. |
+| `wakeHooks` | _(unset / empty)_ | — | — | Outbound orchestrator doorbells — see [Wake hooks](#wake-hooks). The hook list **hot-reloads** like `notify`; bearer tokens are read from `.env` by name at send time and still need a **daemon restart** when the env value changes. |
 | `update.check` | `true` | — | `LCA_UPDATE_CHECK` | When `true`, the daemon may ask GitHub for the newest approved release. Factory checkouts (`0.0.0-dev`) stay `ahead/dev` and do not nag. `0` / `false` disables the check. Restart required. |
 | `update.repo` | `MIT-Consulting/maxwell-automations` | — | `LCA_UPDATE_REPO` | `owner/name` whose GitHub Releases are the **approved** upgrade target. Point this at the KLH fork when that fork is the pin. Restart required. |
 | `update.publicRepo` | _(unset)_ | — | `LCA_UPDATE_PUBLIC_REPO` | Optional second repo shown as informational public latest, only when it differs from `update.repo`. Restart required. |
@@ -252,6 +253,111 @@ the events-map schema before writing YAML — a very old strict schema may rejec
 unknown keys and drop the rest of `settings:` (including remote
 `host` / `allowedIps` / `controlToken`).
 
+### Wake hooks
+
+Max can POST a thin doorbell (or write the same JSON into a workspace chat)
+when a pipeline needs input, halts, blocks, goes green, or the feature queue
+drains. The wake is **outbound HTTPS only** — Max does not expose a callback
+endpoint. A `200` from the remote means the routine **started**, not that it
+finished; the orchestrator acts on Max through the channel it already uses
+(same machine over loopback, or another machine over LAN / VPN / tailnet with
+the control token and `X-LCA-Actor`).
+
+Configure `settings.wakeHooks[]` in `~/.cursor-local-automations/automations.yaml`.
+The list hot-reloads on YAML change (same watcher as `settings.notify`). Put
+the bearer token in `~/.cursor-local-automations/.env` and reference it by
+name — never in YAML, logs, exports, or the dashboard.
+
+```yaml
+settings:
+  wakeHooks:
+    - id: grok-bot
+      sink: http
+      url: https://hooks.example/max
+      tokenEnv: GROK_BOT_WAKE_TOKEN
+      actorId: grok-bot
+      events:
+        - needs_input
+        - halted
+        - blocked
+        - green
+        - queue_batch_complete
+      # coalesceMs: 60000    # default 60s — burst → one summary wake
+      # maxPerHour: 12       # default 12 per hook per rolling hour
+```
+
+**HTTP sink fields:** `id`, `sink: http`, `url` (https), `tokenEnv` (env var
+name matching `^[A-Z][A-Z0-9_]{0,63}$`), optional `actorId` (orchestrator's
+`X-LCA-Actor` label for self-suppression), optional `workspaceIds` /
+`featureIds` filters, `events` (subset of the five kinds below), optional
+`coalesceMs` and `maxPerHour`.
+
+**Chat sink:** `sink: chat`, `chatId` (Max workspace chat id), same `events`
+and filters. Does not use `tokenEnv` or `url`. If the chat is busy
+(`running` or `needs_input`), the wake is recorded as `chat busy` and is not
+sent.
+
+**The five event kinds:** `needs_input`, `halted`, `blocked`, `green`,
+`queue_batch_complete`. Each maps to a `kind` in the JSON body
+(`pipeline.needs_input`, `pipeline.halted`, etc., or `queue.batch_complete`).
+
+**Thin POST body** (no repo content, transcripts, or file paths):
+
+```json
+{
+  "source": "max",
+  "kind": "pipeline.halted",
+  "correlation_id": "<rootRunId>:<cursor>",
+  "workspace": "<workspaceId>",
+  "feature": "<featureId or empty>",
+  "rootRunId": "<rootRunId>",
+  "host": "<machine name from os.hostname()>",
+  "outcome": "<pipeline outcome>",
+  "cursor": 12345,
+  "next": "max watch b83 -w <workspaceId> --since 12345 --json"
+}
+```
+
+For queue drain, `rootRunId` and `feature` are empty and `next` is
+`max queue list -w <workspaceId>`.
+
+**Coalesce and cap:** Defaults coalesce bursts within 60s into one summary
+wake (with a `suppressed` count). Default cap is 12 deliveries per hook per
+rolling hour. Test sends from Settings count against the cap but ignore
+coalesce and event filters.
+
+**Actor suppression:** When `actorId` is set, Max skips a wake if that actor
+already escalated or acted on the lineage after the last wake cursor (except
+`queue_batch_complete`). Doctor can report `delivered, no actor activity since`
+when a wake landed but nothing stamped with that actor followed.
+
+**TLS / corporate CA:** If HTTPS fails with a certificate error, set
+`NODE_EXTRA_CA_CERTS` to your inspecting proxy's PEM before starting the daemon.
+`max update check` uses the same Node `fetch` stack and is a good smoke test
+for corporate TLS — if update check fails with `certificate`, wake hooks will
+too.
+
+**Settings → Alerts:** The Wake hooks section lists configured hooks, the
+last five deliveries, and a **Test send** button per hook (synthetic
+`wake.test` payload with `next: max doctor`).
+
+#### Grok Bot routine template
+
+Paste this into the Bot routine instruction (adjust `host` / actor name to match
+your hook):
+
+```text
+When woken by Max with a JSON body:
+1. Read `host` — run commands on that computer only.
+2. Run the `next` field from the body (e.g. max doctor or max watch … --json).
+3. Act per your playbooks; relay important state to the operator.
+4. Never run max down or stop the daemon.
+5. Set LCA_ACTOR to the hook's actorId (e.g. grok-bot) on every max command
+   so Max can suppress self-caused wakes.
+A 200 from your webhook means the routine started; Max does not wait for a
+callback.
+```
+
 ### Remote access (e.g. viewing the dashboard on your phone over Tailscale)
 
 The server is **loopback-only by default**, so even with Tailscale running, other
@@ -390,14 +496,73 @@ automations:
     name: Nightly Review
     enabled: true
     trigger:
-      type: cron # cron | git | file-watch | command | manual
+      type: cron # cron | git | file-watch | command | manual | webhook
       expression: "0 2 * * *"
     prompt: Review today's commits and summarize risks.
     model: composer-2.5 # optional — scalar id or structured selection (below)
 ```
 
 Trigger shapes: `cron {expression}`, `git {events: [post-commit|pre-push|post-merge]}`,
-`file-watch {globs: [...], debounceMs?}`, `command {command, cwd?}`, `manual {}`.
+`file-watch {globs: [...], debounceMs?}`, `command {command, cwd?}`, `manual {}`,
+`webhook {name, secretEnv, fields?}`.
+
+### Webhook trigger
+
+An external system can start a **plain automation** (not implement-fully) by
+`POST`ing a signed JSON body to Max. The route is
+`POST /api/triggers/webhook/<name>` where `<name>` matches the automation's
+`trigger.name` (lowercase alphanumeric and hyphens, 1–64 chars). Implement-fully
+kickoff stays on the existing REST/CLI path — this route does not start pipeline
+workers. Outbound wake hooks (b83) are a separate feature.
+
+**YAML shape** (secret lives in env, never inline):
+
+```yaml
+trigger:
+  type: webhook
+  name: ship-hook
+  secretEnv: LCA_WEBHOOK_SHIP_SECRET
+  fields: [title, ref]   # optional allowlist mapped into the prompt
+```
+
+Set the secret in `~/.cursor-local-automations/.env` (or the process environment).
+Duplicate `name` values across loaded automations are not armed.
+
+**Request headers** (required):
+
+| Header | Value |
+| --- | --- |
+| `X-LCA-Delivery-Id` | Unique id per delivery (`1–128` chars: letters, digits, `.`, `_`, `:`, `-`) |
+| `X-LCA-Signature` | `sha256=<hex>` HMAC-SHA256 of the **raw** request body using the secret |
+
+**Limits:** body max **64 KiB**; duplicate delivery ids for the same name within
+**24 hours** return `409`. Allowlisted payload fields are truncated to 500 chars
+each. Payload content is wrapped as untrusted input in the spawned agent prompt.
+
+**Signing example** (Node.js):
+
+```javascript
+const crypto = require("node:crypto");
+const body = JSON.stringify({ title: "Deploy finished" });
+const secret = process.env.LCA_WEBHOOK_SHIP_SECRET;
+const hex = crypto.createHmac("sha256", secret).update(body).digest("hex");
+const headers = {
+  "Content-Type": "application/json",
+  "X-LCA-Delivery-Id": "gh-delivery-001",
+  "X-LCA-Signature": `sha256=${hex}`,
+};
+// POST http://127.0.0.1:3747/api/triggers/webhook/ship-hook with body + headers
+```
+
+**Reachability:** Max binds to loopback (and optionally a tailnet address via
+`lca remote on`). The webhook route is **not** a public ingress — it still
+requires the configured **IP allowlist** (`settings.allowedIps`). Senders on the
+public internet (GitHub, Linear, etc.) cannot reach loopback; the operator must
+run a tunnel they control (for example Tailscale Funnel or another reverse proxy)
+to forward HTTPS to Max. Max does not open `0.0.0.0` or provision tunnels.
+
+Bare `lca doctor` lists armed webhook names and the last delivery result when
+the daemon exposes `GET /api/triggers/webhooks`.
 
 ### Model selection
 
@@ -531,6 +696,13 @@ covers daemon wiring only. Wave recovery procedures:
 `lca implement-fully --idea "<text>"` (see `lca help`), or the
 `/implement-fully` skill installed via `npm run install:skill`. Both call
 resolve → provision → introspect → `POST /api/runs` below.
+
+Optional **`--then <automation-key>`** names one ordinary workspace automation
+to run as a normal chain after a green `final-gate` (for example `--then ship`).
+The pipeline itself still never pushes; further steps are that automation's own
+`chain.next`. See the commented `ship` example in
+[`config/automations.example.yaml`](../config/automations.example.yaml).
+The dashboard kickoff modal exposes the same choice as **After the gate**.
 
 **Workers (fixed cycle):** when a `researcher` role resolves,
 `research` → `plan-skeleton` → `plan-phase` → `implement` → `review` →
@@ -698,6 +870,7 @@ settings:
     # Cheap unattended lane: S/M features, release cleanups, doc-heavy work.
     # Calibrated on b51 (four-phase M feature, ~42m including one transient retry).
     fast-moderate:
+      description: Cheap unattended lane for S/M features and doc-heavy work.
       planner:
         id: grok-4.6
         params:
@@ -718,10 +891,42 @@ settings:
           - { id: fast, value: "true" }
 
     # Opt-in for L features: Sol architects the skeleton once, Opus 5.5 holds the
-    # terminal gate, Fable researches only when --research-approval is armed.
-    # Phase plan/review/implement stay on the cheap stack. Cross-family review
-    # holds (Grok reviews Composer; Opus gates both).
+    # terminal gate. No researcher; use quality-research when the planner needs a
+    # corpus first. Phase plan/review/implement stay on the cheap stack.
+    # Cross-family review holds (Grok reviews Composer; Opus gates both).
     quality:
+      architect:
+        id: gpt-5.6-sol
+        params:
+          - { id: reasoning, value: medium }
+      planner:
+        id: grok-4.6
+        params:
+          - { id: effort, value: high }
+          - { id: fast, value: "false" }
+      implementer:
+        id: composer-2.5
+        params:
+          - { id: fast, value: "true" }
+      reviewer:
+        id: grok-4.6
+        params:
+          - { id: effort, value: high }
+          - { id: fast, value: "false" }
+      docs:
+        id: composer-2.5
+        params:
+          - { id: fast, value: "true" }
+      gatekeeper:
+        id: claude-opus-5-5
+        params:
+          - { id: effort, value: high }
+          - { id: fast, value: "false" }
+
+    # quality plus a Fable researcher. A researcher seat starts every kickoff at
+    # the research step; --research-approval before-planning only adds an
+    # approval pause after it. Without the flag, research still runs.
+    quality-research:
       architect:
         id: gpt-5.6-sol
         params:
@@ -786,7 +991,7 @@ settings:
           - { id: fast, value: "false" }
 
   # optional — pre-select a profile at kickoff; omit → "default"
-  # Keep the expensive seats (quality / ui-polish) opt-in rather than default.
+  # Keep the expensive seats (quality / quality-research / ui-polish) opt-in rather than default.
   defaultPipelineRoleModelProfile: fast-moderate
 ```
 
@@ -798,7 +1003,8 @@ Do not define a named profile id `default` in YAML — that id is reserved for
 map; scalar and structured forms can be mixed per role.
 
 `fast-moderate` is the measured house default for S/M work; reach for
-`quality` on L features and `ui-polish` on dashboard phases. Before kickoff,
+`quality` on L features, `quality-research` when the planner needs a corpus it
+cannot infer from the repo, and `ui-polish` on dashboard phases. Before kickoff,
 settle material scope decisions, restart after recipe edits, and confirm the
 concrete role params with `lca implement-fully --feature b42 --dry-run`.
 
@@ -989,8 +1195,8 @@ multi-feature concurrency is not shipped yet (serial queue only).
 
 | Command | Meaning |
 | --- | --- |
-| `lca queue add --feature b42` | Enqueue documented work (options mirror implement-fully, including `--dry-run`) |
-| `lca queue add --idea "<text>"` | Enqueue new work from an idea |
+| `lca queue add --feature b42` | Enqueue documented work (options mirror implement-fully, including `--dry-run` and `--then <key>`) |
+| `lca queue add --idea "<text>"` | Enqueue new work from an idea (same options, including `--then`) |
 | `lca queue list` | List entries for all workspaces (bare `lca queue` aliases list) |
 | `lca queue rm <id>` | Cancel a waiting (`queued` or `blocked`) entry |
 | `lca queue clear` | Cancel all `queued` and `blocked` entries |

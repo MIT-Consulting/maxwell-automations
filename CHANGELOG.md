@@ -10,7 +10,32 @@ and version numbers follow [SemVer](https://semver.org/).
 
 ### Upgrade actions
 
-- none
+none
+
+## [1.2.0] - 2026-10-14
+
+### Added
+
+- **`max capabilities [--json] [--workspace, -w <id|name|path>]`** — tag-stamped orchestrator map (surfaces with `bestFor` / `notFor`, live role-model profiles with optional YAML `description`, planning profiles, status vocabulary, playbooks, anti-patterns, and doc pointers). With `--workspace`, projects roadmap readiness, active pipeline state, and feature-queue counts to mark kickoff surfaces and playbooks `available` or `blocked`.
+- **`max-orchestrate` skill and `AGENTS.md` Orchestrating Max router** — bundled skill (installed by `max skills install` and `max update --apply`) and root `AGENTS.md` section that route outside orchestrators (Cursor chat, Grok Bot) to `max capabilities --json`.
+- **JSON fallbacks (`max status --json`, `max list --json`)** — machine-readable single-document JSON outputs with explicit window/display limits, alongside `max queue list --json`.
+- **Orchestrator wake hooks (`settings.wakeHooks[]`)** — outbound HTTPS webhook and workspace-chat doorbells on pipeline lifecycle events (`needs_input`, `halted`, `blocked`, `green`, `queue_drained`) with bearer token from `.env` (`tokenEnv`), hot reload, coalescing, hourly cap, self-caused `X-LCA-Actor` suppression, retry, `max doctor` ring log, and a **Wake hooks** panel with a **Test** button in Dashboard **Settings → Alerts**.
+- **Inbound webhook trigger (`trigger: webhook`)** — HMAC-SHA256-verified `POST /api/triggers/webhook/<name>` (`X-LCA-Signature`), exempt from the control token, with delivery-id deduplication (`X-LCA-Delivery`, schema v25), 64 KiB body cap, optional payload field allowlist mapped into prompt variables, untrusted-input prompt preface, and a `Webhooks` status block in `max doctor`.
+- **`--then <automation>` after a green `implement-fully`** — chains an ordinary workspace automation when `final-gate` stops with `complete:` and holds the checkout and feature queue until the tail chain is terminal; supported on `max implement-fully`, `max queue add`, the Dashboard kickoff modal (**After the gate**), `max queue list`, Running-column preview cards, and `max doctor`.
+- **Queue entry detail (`max queue list -v` / `--json` and Running-column preview cards)** — shows the clickable feature doc link (opens in the Files viewer), role-model profile or resolved `role=model` list, planning profile and `--execute` / research-approval controls, `--after` dependencies with live states, queue position, and enqueue time.
+- **Cancel and reorder queued entries (`max queue move` and preview-card actions)** — Running-column preview cards add **Move to top**, **Move up**, **Move down**, and dependent-aware **Cancel** confirmation; `max queue move <id> --before <id> | --after <id> | --top` rewrites waiting positions inside a transaction and refuses moving an entry ahead of an unfinished `--after` dependency.
+
+### Fixed
+
+- Wake hooks ring on the first lifecycle event even when the pipeline was kicked off with an `X-LCA-Actor` header; TLS failures classify nested error causes; coalesce summaries preserve the original payload alongside `suppressed`; Settings → Alerts Wake hooks shows load errors instead of empty-config copy.
+- `POST /api/triggers/webhook/<name>` stays control-token-exempt when the webhook name fails charset validation so typos return `404` instead of `401`, and webhook triggers declared in global config are reported as `not armed` in `max doctor`.
+- Dashboard kickoff modal resets the **After the gate** (`--then`) selection if loading workspace automations fails so a previous workspace's automation key cannot be submitted.
+
+### Upgrade actions
+
+- **Upgrading from 1.1.4:** `max update --apply` fetches `v1.2.0`, builds, installs the new **`max-orchestrate`** skill into `~/.cursor/skills/`, restarts the daemon (migrating `state.sqlite` to schema v25 automatically), and reloads open dashboard tabs. If you upgrade by hand with `git checkout v1.2.0`, run **`max skills install`** after `npm ci && npm run build` so `max doctor` does not flag skills-bundle drift.
+- **Upgrading from 1.1.0–1.1.3:** `max update --apply` works; reload any open dashboard tab once after upgrading (automatic tab reload on version change shipped in 1.1.4) and run **`max skills install`** if hopping from 1.1.0–1.1.3 by hand.
+- **Windows installs still on 1.0.7 or earlier:** `max update --apply` cannot make the hop (`spawnSync npm.cmd EINVAL`). Move the pin once by hand from a clean tree: `git fetch --tags origin`, `git checkout v1.2.0`, `npm ci` (requires Node 22.13+), `npm run build`, `max skills install`, `max up`, `max doctor`. From 1.1.0 onward, `--apply` works.
 
 ## [1.1.4] - 2026-10-05
 

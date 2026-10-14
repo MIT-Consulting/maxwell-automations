@@ -148,7 +148,7 @@ function buildChain(form: FormState): ChainConfig | undefined {
   };
 }
 
-function buildTrigger(form: FormState): TriggerConfig {
+function buildTrigger(form: FormState, initial?: Automation): TriggerConfig {
   switch (form.triggerType) {
     case "cron":
       return { type: "cron", expression: form.cronExpression.trim() };
@@ -180,6 +180,11 @@ function buildTrigger(form: FormState): TriggerConfig {
     }
     case "manual":
       return { type: "manual" };
+    case "webhook":
+      if (initial?.trigger.type === "webhook") {
+        return initial.trigger;
+      }
+      throw new Error("webhook trigger cannot be created from the dashboard");
   }
 }
 
@@ -277,7 +282,7 @@ export function AutomationModal(props: AutomationModalProps) {
     setValidationError(null);
     setSubmitError(null);
 
-    const trigger = buildTrigger(form);
+    const trigger = buildTrigger(form, initial);
 
     if (mode === "create") {
       const payload: CreateAutomationRequest = {

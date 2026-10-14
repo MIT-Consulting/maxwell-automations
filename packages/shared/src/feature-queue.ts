@@ -61,6 +61,15 @@ export function classifyFeatureQueueOutcome(
 
   const finalGate = completedFinalGate(lineage, terminalConfigKey);
   if (finalGate) {
+    const gateIndex = lineage.findIndex((run) => run === finalGate);
+    const afterGate = lineage.slice(gateIndex + 1);
+    if (
+      afterGate.some(
+        (run) => run.status === "failed" || run.status === "cancelled"
+      )
+    ) {
+      return "failed";
+    }
     const gateOutcome = classifyFinalGateStopReason(finalGate.chainStopReason);
     return gateOutcome === "complete" ? "done" : "failed";
   }
@@ -99,6 +108,15 @@ export function featureQueueFailureDetail(
 
   const finalGate = completedFinalGate(lineage, terminalConfigKey);
   if (finalGate) {
+    const gateIndex = lineage.findIndex((run) => run === finalGate);
+    const afterGate = lineage.slice(gateIndex + 1);
+    const tailFailures = afterGate.filter(
+      (run) => run.status === "failed" || run.status === "cancelled"
+    );
+    if (tailFailures.length > 0) {
+      const pick = tailFailures[tailFailures.length - 1]!;
+      return `${pick.configKey} ${pick.status}`;
+    }
     const gateOutcome = classifyFinalGateStopReason(finalGate.chainStopReason);
     if (gateOutcome === "blocked") {
       const reason = finalGate.chainStopReason?.trim() ?? "";

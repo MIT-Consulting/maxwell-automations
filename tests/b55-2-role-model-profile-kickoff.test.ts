@@ -179,7 +179,7 @@ async function withServer(
 describe("b55.2 resolveRoleModelProfileDefaults", () => {
   const introspection = buildIntrospection({
     pipelineRoleModels: QUALITY_DEFAULTS,
-    pipelineRoleModelProfiles: { cheap: CHEAP_PROFILE },
+    pipelineRoleModelProfiles: { cheap: { roleModels: CHEAP_PROFILE } },
     defaultPipelineRoleModelProfile: "cheap",
   });
 
@@ -246,8 +246,8 @@ describe("b55.2 introspection role-model profiles", () => {
     const body = buildIntrospection({
       pipelineRoleModels: QUALITY_DEFAULTS,
       pipelineRoleModelProfiles: {
-        cheap: CHEAP_PROFILE,
-        quality: QUALITY_DEFAULTS,
+        cheap: { roleModels: CHEAP_PROFILE },
+        quality: { roleModels: QUALITY_DEFAULTS },
       },
       defaultPipelineRoleModelProfile: null,
     });
@@ -263,7 +263,7 @@ describe("b55.2 introspection role-model profiles", () => {
   it("sets roleDefaults from defaultPipelineRoleModelProfile when configured", () => {
     const body = buildIntrospection({
       pipelineRoleModels: QUALITY_DEFAULTS,
-      pipelineRoleModelProfiles: { cheap: CHEAP_PROFILE },
+      pipelineRoleModelProfiles: { cheap: { roleModels: CHEAP_PROFILE } },
       defaultPipelineRoleModelProfile: "cheap",
     });
     expect(body.defaultRoleModelProfileId).toBe("cheap");
@@ -292,7 +292,7 @@ describe("b55.2 CLI --role-profile", () => {
     const settings: ResolvedSettings = {
       ...DEFAULT_SETTINGS,
       pipelineRoleModels: QUALITY_DEFAULTS,
-      pipelineRoleModelProfiles: { cheap: CHEAP_PROFILE },
+      pipelineRoleModelProfiles: { cheap: { roleModels: CHEAP_PROFILE } },
       defaultPipelineRoleModelProfile: "cheap",
     };
 
@@ -337,7 +337,7 @@ describe("b55.2 CLI --role-profile", () => {
     const settings: ResolvedSettings = {
       ...DEFAULT_SETTINGS,
       pipelineRoleModels: QUALITY_DEFAULTS,
-      pipelineRoleModelProfiles: { cheap: CHEAP_PROFILE },
+      pipelineRoleModelProfiles: { cheap: { roleModels: CHEAP_PROFILE } },
       defaultPipelineRoleModelProfile: null,
     };
 
@@ -364,7 +364,7 @@ describe("b55.2 CLI --role-profile", () => {
     const settings: ResolvedSettings = {
       ...DEFAULT_SETTINGS,
       pipelineRoleModels: QUALITY_DEFAULTS,
-      pipelineRoleModelProfiles: { cheap: CHEAP_PROFILE },
+      pipelineRoleModelProfiles: { cheap: { roleModels: CHEAP_PROFILE } },
       defaultPipelineRoleModelProfile: "cheap",
     };
 

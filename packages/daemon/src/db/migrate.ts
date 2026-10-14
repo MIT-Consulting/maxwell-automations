@@ -42,6 +42,7 @@ import {
   MIGRATION_V22_FEATURE_QUEUE_ORIGIN_SQL,
   MIGRATION_V23_CHAIN_ROOT_INDEX_SQL,
   MIGRATION_V24_PIPELINE_DIRECTIVES_SQL,
+  MIGRATION_V25_WEBHOOK_DELIVERIES_SQL,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -428,6 +429,18 @@ export function migrate(db: Database.Database): void {
       db.exec(MIGRATION_V24_PIPELINE_DIRECTIVES_SQL);
     }
     applyVersion(db, 24);
+  }
+
+  if (version < 25) {
+    const table = db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'webhook_deliveries'"
+      )
+      .get() as { name: string } | undefined;
+    if (!table) {
+      db.exec(MIGRATION_V25_WEBHOOK_DELIVERIES_SQL);
+    }
+    applyVersion(db, 25);
   }
 
   if (currentVersion(db) < SCHEMA_VERSION) {

@@ -380,7 +380,7 @@ describe("b36.04c pure helpers", () => {
   });
 
   describe("buildKickoffVariables / assertVariablesMatchRequired", () => {
-    it("derives the ten keys with forward slashes and Quick/JIT defaults", () => {
+    it("derives the eleven keys with forward slashes and Quick/JIT defaults", () => {
       const vars = buildKickoffVariables(
         "b42",
         "b42-my-feature",
@@ -397,6 +397,7 @@ describe("b36.04c pure helpers", () => {
         approvalPolicy: "none",
         researchApprovalPolicy: "none",
         loopMode: "normal",
+        then: "none",
       });
       expect(vars.featureDir.includes("\\")).toBe(false);
       expect(vars.featureIndex.includes("\\")).toBe(false);

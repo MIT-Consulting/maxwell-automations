@@ -74,6 +74,27 @@ describe("pipelineRoleModelProfilesSchema", () => {
     expect(parsed.cheap?.docs).toBe("composer-2.5");
     expect(parsed.cheap?.implementer).toBeUndefined();
   });
+
+  it("accepts optional description beside role keys", () => {
+    const parsed = pipelineRoleModelProfilesSchema.parse({
+      quality: {
+        description: "  High regression risk  ",
+        planner: "grok-4.5",
+      },
+    });
+    expect(parsed.quality?.description).toBe("High regression risk");
+    expect(parsed.quality?.planner).toBe("grok-4.5");
+  });
+
+  it("rejects unknown keys on a profile entry", () => {
+    const result = pipelineRoleModelProfilesSchema.safeParse({
+      cheap: {
+        planner: "grok-4.5",
+        extra: "nope",
+      },
+    });
+    expect(result.success).toBe(false);
+  });
 });
 
 describe("settingsSchema + pipelineRoleModelProfiles", () => {
@@ -142,7 +163,7 @@ describe("loadSettings pipelineRoleModelProfiles resolution", () => {
     );
     try {
       const resolved = loadSettings();
-      expect(resolved.pipelineRoleModelProfiles.cheap).toEqual({
+      expect(resolved.pipelineRoleModelProfiles.cheap?.roleModels).toEqual({
         planner: { id: "grok-4.5" },
         implementer: {
           id: "composer-2.5",
@@ -153,7 +174,7 @@ describe("loadSettings pipelineRoleModelProfiles resolution", () => {
         },
         reviewer: { id: "grok-4.5" },
       });
-      expect(resolved.pipelineRoleModelProfiles.cheap?.docs).toBeUndefined();
+      expect(resolved.pipelineRoleModelProfiles.cheap?.roleModels.docs).toBeUndefined();
     } finally {
       rmSync(testHome, { recursive: true, force: true });
     }
@@ -212,12 +233,12 @@ describe("loadSettings pipelineRoleModelProfiles resolution", () => {
     );
     try {
       const resolved = loadSettings();
-      expect(resolved.pipelineRoleModelProfiles.cheap).toEqual({
+      expect(resolved.pipelineRoleModelProfiles.cheap?.roleModels).toEqual({
         implementer: { id: "composer-2.5" },
         docs: { id: "grok-4.5" },
       });
-      expect(resolved.pipelineRoleModelProfiles.cheap?.planner).toBeUndefined();
-      expect(resolved.pipelineRoleModelProfiles.cheap?.reviewer).toBeUndefined();
+      expect(resolved.pipelineRoleModelProfiles.cheap?.roleModels.planner).toBeUndefined();
+      expect(resolved.pipelineRoleModelProfiles.cheap?.roleModels.reviewer).toBeUndefined();
     } finally {
       rmSync(testHome, { recursive: true, force: true });
     }
@@ -310,8 +331,41 @@ describe("loadSettings pipelineRoleModelProfiles resolution", () => {
       expect(resolved.pipelineRoleModels).toEqual({
         planner: { id: "grok-4.5" },
       });
-      expect(resolved.pipelineRoleModelProfiles.cheap).toEqual({
+      expect(resolved.pipelineRoleModelProfiles.cheap?.roleModels).toEqual({
         implementer: { id: "composer-2.5" },
+      });
+    } finally {
+      rmSync(testHome, { recursive: true, force: true });
+    }
+  });
+
+  it("trims and preserves profile description separately from roleModels", async () => {
+    const testHome = mkdtempSync(join(tmpdir(), "lca-b55-1-desc-"));
+    vi.resetModules();
+    vi.doMock("node:os", () => ({ homedir: () => testHome }));
+    vi.doMock("../packages/daemon/src/config/parse.ts", () => ({
+      parseGlobalConfig: () => ({
+        settings: {
+          pipelineRoleModelProfiles: {
+            quality: {
+              description: "  High regression risk  ",
+              planner: "grok-4.5",
+            },
+          },
+        },
+      }),
+    }));
+
+    const { loadSettings } = await import(
+      "../packages/daemon/src/config/settings.ts"
+    );
+    try {
+      const resolved = loadSettings();
+      expect(resolved.pipelineRoleModelProfiles.quality?.description).toBe(
+        "High regression risk"
+      );
+      expect(resolved.pipelineRoleModelProfiles.quality?.roleModels).toEqual({
+        planner: { id: "grok-4.5" },
       });
     } finally {
       rmSync(testHome, { recursive: true, force: true });

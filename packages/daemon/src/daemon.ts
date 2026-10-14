@@ -4,8 +4,13 @@ import { dirname, join } from "node:path";
 import { HALT_DISCOVERY_INPUT_KIND, UpdateChecker } from "@lca/shared";
 import { openDatabase } from "./db/index.js";
 import { reconcileConfig } from "./config/reconcile.js";
-import { loadSettings, loadNotifySettings } from "./config/settings.js";
+import {
+  loadSettings,
+  loadNotifySettings,
+  loadWakeHooksSettings,
+} from "./config/settings.js";
 import { buildNotifySettingsPublic } from "./config/notify-public.js";
+import { buildWakeHooksPublic } from "./config/wake-hooks-public.js";
 import { writeNotifySettings } from "./config/write.js";
 import { startConfigWatcher } from "./config/watch.js";
 import { loadEnv, getApiKey } from "./env.js";
@@ -26,6 +31,7 @@ import {
 } from "./notify/halt-discovery-notifications.js";
 import { notifyPlanApprovalIfApplicable } from "./notify/plan-approval-notifications.js";
 import { buildNtfyDashboardUrl, Notifier } from "./notify/notifier.js";
+import { createWakeHookDispatcher } from "./notify/wake-hooks.js";
 import { notifyOnRunCompleted } from "./notify/run-completed.js";
 import { provisionGeneratedWorkers } from "./config/generated-workers.js";
 import { ChainRunner } from "./runs/chain-runner.js";
@@ -42,6 +48,7 @@ import { FeatureQueueRunner } from "./runs/feature-queue-runner.js";
 import { ChatEngine, createChatDefaultsResolver } from "./chats/engine.js";
 import { ChatStore } from "./chats/store.js";
 import { TriggerManager } from "./triggers/manager.js";
+import { webhookStatusStore } from "./triggers/webhook.js";
 import { RunStore } from "./runs/store.js";
 import { assertTransition } from "./runs/state-machine.js";
 import { AttachmentStore } from "./attachments/store.js";
@@ -229,6 +236,10 @@ export async function main(): Promise<void> {
     onLog: log,
   });
   let currentNotify = settings.notify;
+  let currentWakeHooks = loadWakeHooksSettings({ onLog: log });
+  const wakeHookDispatcher = createWakeHookDispatcher(runStore, log);
+  wakeHookDispatcher.reconfigure(currentWakeHooks);
+  notifier.setWakeHookDispatcher(wakeHookDispatcher);
 
   const reloadAndApplyNotify = (): typeof currentNotify => {
     currentNotify = loadNotifySettings({ onLog: log });
@@ -237,6 +248,15 @@ export async function main(): Promise<void> {
       ntfy: currentNotify.ntfy,
     });
     return currentNotify;
+  };
+
+  const reloadAndApplyWakeHooks = (): typeof currentWakeHooks => {
+    currentWakeHooks = loadWakeHooksSettings({
+      onLog: log,
+      fallback: currentWakeHooks,
+    });
+    wakeHookDispatcher.reconfigure(currentWakeHooks);
+    return currentWakeHooks;
   };
 
   // Single Input Hub for engine ask_user waits and halt-discovery passive cards.
@@ -387,6 +407,9 @@ export async function main(): Promise<void> {
     },
   });
   await chatEngine.resumeInterruptedChats();
+  wakeHookDispatcher.setSendChatMessage((chatId, text) =>
+    chatEngine.sendMessage(chatId, text)
+  );
 
   const attachmentStore = new AttachmentStore(db);
   const attachmentSweep = startAttachmentSweepScheduler({
@@ -548,6 +571,18 @@ export async function main(): Promise<void> {
       },
       testSend: () => notifier.testNtfy(),
     },
+    wakeHooks: {
+      getPublic: () =>
+        buildWakeHooksPublic(
+          currentWakeHooks,
+          wakeHookDispatcher.getDeliveryRings(),
+          (hook) => wakeHookDispatcher.getDoctorContext(hook)
+        ),
+      testSend: (hookId) => wakeHookDispatcher.dispatchTest(hookId),
+    },
+    webhookTriggers: {
+      getPublic: () => webhookStatusStore.getPublic(db),
+    },
     updates: {
       snapshot: () => updates.snapshot(),
       checkNow: () => updates.checkNow(),
@@ -590,6 +625,13 @@ export async function main(): Promise<void> {
       } catch (err) {
         const text = err instanceof Error ? err.message : String(err);
         log(`Notify settings reload failed: ${text}`);
+      }
+      try {
+        reloadAndApplyWakeHooks();
+        log("Wake hooks reloaded");
+      } catch (err) {
+        const text = err instanceof Error ? err.message : String(err);
+        log(`Wake hooks reload failed: ${text}`);
       }
     },
     log

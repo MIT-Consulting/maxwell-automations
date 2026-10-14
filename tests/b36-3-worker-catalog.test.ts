@@ -35,6 +35,7 @@ const SAMPLE_VARIABLES: ChainVariables = {
   approvalPolicy: "none",
   researchApprovalPolicy: "none",
   loopMode: "normal",
+  then: "none",
 };
 
 function extractPlaceholders(prompt: string): string[] {

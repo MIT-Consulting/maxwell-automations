@@ -87,6 +87,7 @@ describe("b36.05c dashboard kickoff parity", () => {
       approvalPolicy: "none",
       researchApprovalPolicy: "none",
       loopMode: "normal",
+      then: "none",
     });
     expect(vars.featureDir.includes("\\")).toBe(false);
   });
@@ -290,6 +291,7 @@ describe("b36.05c dashboard kickoff parity", () => {
       approvalPolicy: "none",
       researchApprovalPolicy: "none",
       loopMode: "normal",
+      then: "none",
     });
     expect(payload.roleModels).toEqual({
       planner: { id: "planner-model" },

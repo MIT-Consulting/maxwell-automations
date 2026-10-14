@@ -32,6 +32,7 @@ import {
   type PipelineRoleModelProfile,
   type PipelineWorkerSummary,
   type PipelineWorkspacePreconditions,
+  type ResolvedPipelineRoleModelProfile,
 } from "@lca/shared";
 import { automationId } from "../config/parse.js";
 import { GENERATED_CONFIG_KEY_PREFIX } from "../config/generated-workers.js";
@@ -1218,14 +1219,12 @@ function copyRoleDefaults(
 
 export type RoleModelIntrospectionSettings = {
   pipelineRoleModels: Partial<Record<PipelineModelRole, ModelSelection>>;
-  pipelineRoleModelProfiles: Record<
-    string,
-    Partial<Record<PipelineModelRole, ModelSelection>>
-  >;
+  pipelineRoleModelProfiles: Record<string, ResolvedPipelineRoleModelProfile>;
   defaultPipelineRoleModelProfile: string | null;
 };
 
-function buildRoleModelProfiles(
+/** Exported for b80 capability catalog profile section. */
+export function buildRoleModelProfiles(
   settings: RoleModelIntrospectionSettings
 ): PipelineRoleModelProfile[] {
   const profiles: PipelineRoleModelProfile[] = [
@@ -1236,12 +1235,12 @@ function buildRoleModelProfiles(
     },
   ];
   for (const profileId of Object.keys(settings.pipelineRoleModelProfiles).sort()) {
+    const entry = settings.pipelineRoleModelProfiles[profileId];
     profiles.push({
       id: profileId,
       label: profileId,
-      roleModels: copyRoleDefaults(
-        settings.pipelineRoleModelProfiles[profileId] ?? {}
-      ),
+      roleModels: copyRoleDefaults(entry?.roleModels ?? {}),
+      ...(entry?.description ? { description: entry.description } : {}),
     });
   }
   return profiles;

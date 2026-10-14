@@ -35,6 +35,11 @@ describe("b46 test lanes — invocation builder", () => {
     expect(serial).toContain("--no-file-parallelism");
     expect(serial).toContain("--maxWorkers=1");
     expect(serial).toContain(`--testTimeout=${REAL_GIT_TIMEOUT_MS}`);
+    for (const args of [normal, serial]) {
+      const idx = args.indexOf(".export-public/**");
+      expect(idx).toBeGreaterThan(0);
+      expect(args[idx - 1]).toBe("--exclude");
+    }
 
     // Disjoint union: normal excludes exactly the serial set; serial lists them.
     expect(REAL_GIT_LANE_FILES).toHaveLength(4);

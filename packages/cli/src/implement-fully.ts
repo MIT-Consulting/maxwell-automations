@@ -7,10 +7,12 @@ import {
   IMPLEMENT_FULLY_RESEARCH_APPROVAL_POLICIES,
   KickoffError,
   PIPELINE_MODEL_ROLES,
+  assertThenTargetAllowed,
   assertVariablesMatchRequired as sharedAssertVariablesMatchRequired,
   architectJitPlanningWarning,
   buildKickoffVariables as sharedBuildKickoffVariables,
   findActivePipelineBlocker,
+  findActiveThenTailBlocker,
   requiredRolesFromWorkers as sharedRequiredRolesFromWorkers,
   resolveArchitectSelection,
   resolveEntryWorkerKey,
@@ -75,6 +77,7 @@ const VALID_FLAGS = [
   "--force",
   "--prune",
   "--execute",
+  "--then",
 ] as const;
 
 export type ImplementFullyInput =
@@ -91,6 +94,7 @@ export type ImplementFullyArgs = {
   force: boolean;
   prune: boolean;
   execute: boolean;
+  then: string;
 };
 
 export type { KickoffVariables, ResolvedRoleRecipe, RoleSource };
@@ -118,6 +122,8 @@ export function parseImplementFullyArgs(args: string[]): ImplementFullyArgs {
   let force = false;
   let prune = false;
   let execute = false;
+  let then = "none";
+  let sawThen = false;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
@@ -220,6 +226,18 @@ export function parseImplementFullyArgs(args: string[]): ImplementFullyArgs {
       parseRoleOverride(value, roleOverrides);
       continue;
     }
+    if (arg === "--then") {
+      if (sawThen) {
+        throw new DaemonError("--then may only be specified once");
+      }
+      const value = args[++i];
+      if (!value) {
+        throw new DaemonError("--then requires a value");
+      }
+      sawThen = true;
+      then = value;
+      continue;
+    }
     if (arg.startsWith("-")) {
       throw new DaemonError(
         `Unknown flag "${arg}". Valid flags: ${VALID_FLAGS.join(", ")}`
@@ -262,6 +280,7 @@ export function parseImplementFullyArgs(args: string[]): ImplementFullyArgs {
     force,
     prune,
     execute,
+    then,
   };
 }
 
@@ -336,14 +355,15 @@ export function validateFeatureSlugIdea(
   }
 }
 
-/** Build the ten kickoff variables (forward slashes always). */
+/** Build the eleven kickoff variables (forward slashes always). */
 export function buildKickoffVariables(
   feature: string,
   slug: string,
   idea: string,
   profileId: ImplementFullyPlanningProfileId | string = DEFAULT_IMPLEMENT_FULLY_PLANNING_PROFILE_ID,
   researchApprovalPolicy: ImplementFullyResearchApprovalPolicy = "none",
-  loopMode: ImplementFullyLoopMode = "normal"
+  loopMode: ImplementFullyLoopMode = "normal",
+  then: string = "none"
 ): KickoffVariables {
   try {
     return sharedBuildKickoffVariables(
@@ -352,7 +372,8 @@ export function buildKickoffVariables(
       idea,
       profileId,
       researchApprovalPolicy,
-      loopMode
+      loopMode,
+      then
     );
   } catch (err) {
     asDaemonError(err);
@@ -520,11 +541,25 @@ export async function buildImplementFullyKickoff(
     resolved.idea,
     parsed.profile,
     kickoffResearchApprovalPolicy,
-    parsed.execute ? "execute" : "normal"
+    parsed.execute ? "execute" : "normal",
+    parsed.then
   );
 
   const introspection = await client.getPipeline(IMPLEMENT_FULLY_PIPELINE_ID);
   assertVariablesMatchRequired(variables, introspection.requiredVariables);
+
+  if (parsed.then !== "none") {
+    const automations = await client.listAutomations();
+    try {
+      assertThenTargetAllowed(
+        parsed.then,
+        automations,
+        workspace.id
+      );
+    } catch (err) {
+      asDaemonError(err);
+    }
+  }
 
   if (parsed.roleProfile) {
     variables = {
@@ -646,6 +681,7 @@ export async function buildImplementFullyKickoff(
     `Profile:   ${profile.label} (${profile.id})`,
     `Planning:  depth=${variables.planningDepth} approval=${variables.approvalPolicy}`,
     `Loop mode: ${variables.loopMode}`,
+    ...(variables.then !== "none" ? [`Then:      ${variables.then}`] : []),
     `Entry:     ${entryWorkerKey} (${rootRole})`,
     researcherSelection
       ? `Research:  ${researcherSelection.id} (approval=${researchApprovalPolicy})`
@@ -684,11 +720,33 @@ export async function cmdImplementFully(
   if (!parsed.force) {
     // Newest-first; GUARD_RUN_LIMIT means a non-terminal older than that window
     // is not detected (theoretical for normal use).
-    const runs = await client.listRuns(GUARD_RUN_LIMIT);
-    const blocker = findActivePipelineBlocker(
-      runs,
+    const [listedRuns, listedAutomations] = await Promise.all([
+      client.listRuns(GUARD_RUN_LIMIT),
+      client.listAutomations(),
+    ]);
+    const workspaceRuns = listedRuns.filter(
+      (run) => run.workspaceId === built.workspace.id
+    );
+    const workspaceAutomations = listedAutomations
+      .filter((automation) => automation.workspaceId === built.workspace.id)
+      .map((automation) => ({
+        id: automation.id,
+        configKey: automation.configKey,
+      }));
+    const pipelineBlocker = findActivePipelineBlocker(
+      workspaceRuns,
       built.pipelineAutomationIds
     );
+    const thenTailBlocker = findActiveThenTailBlocker(
+      workspaceRuns.map((run) => ({
+        id: run.id,
+        parentRunId: run.parentRunId,
+        automationId: run.automationId,
+        status: run.status,
+      })),
+      workspaceAutomations
+    );
+    const blocker = pipelineBlocker ?? thenTailBlocker;
     if (blocker) {
       throw new DaemonError(
         `Active pipeline run ${blocker.id} on automation ${blocker.automationId} ` +

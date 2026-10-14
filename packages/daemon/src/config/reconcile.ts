@@ -1,6 +1,6 @@
 import { readdirSync, existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import type { AutomationYamlEntry } from "@lca/shared";
+import type { AutomationYamlEntry, WebhookTriggerConfig } from "@lca/shared";
 import { normalizeModelConfigValue } from "@lca/shared";
 import { ChatStore } from "../chats/store.js";
 import type { LcaDatabase } from "../db/index.js";
@@ -11,6 +11,7 @@ import {
   workspaceChatConfigPath,
 } from "../paths.js";
 import { isGeneratedConfigKey } from "./generated-workers.js";
+import { webhookStatusStore } from "../triggers/webhook.js";
 import {
   automationId,
   configKeyForEntry,
@@ -180,6 +181,20 @@ export function reconcileConfig(
     ),
   ];
 
+  const webhookNameCounts = new Map<string, number>();
+  for (const item of parsed) {
+    if (item.entry.trigger.type === "webhook") {
+      const name = (item.entry.trigger as WebhookTriggerConfig).name;
+      webhookNameCounts.set(name, (webhookNameCounts.get(name) ?? 0) + 1);
+    }
+  }
+  const duplicatedWebhookNames = new Set(
+    [...webhookNameCounts.entries()]
+      .filter(([, count]) => count > 1)
+      .map(([name]) => name)
+  );
+  webhookStatusStore.setDuplicateNames(duplicatedWebhookNames);
+
   const upsertWs = db.prepare(upsertWorkspace);
   const upsertAuto = db.prepare(upsertAutomation);
   const chatStore = new ChatStore(db);
@@ -211,6 +226,16 @@ export function reconcileConfig(
     }
 
     for (const item of parsed) {
+      if (item.entry.trigger.type === "webhook") {
+        const webhookName = (item.entry.trigger as WebhookTriggerConfig).name;
+        if (duplicatedWebhookNames.has(webhookName)) {
+          parseOptions.onWarning?.(
+            `${item.configPath} automation "${item.entry.name}" webhook "${webhookName}" is not armed because the name is duplicated across loaded automations.`
+          );
+          continue;
+        }
+      }
+
       const wsId =
         item.workspacePath === "__global__"
           ? "__global__"

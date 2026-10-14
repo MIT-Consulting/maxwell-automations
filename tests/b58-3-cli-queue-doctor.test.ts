@@ -7,7 +7,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type FeatureQueueEntry } from "@lca/shared";
+import { emptyQueueEntryDetail, type FeatureQueueEntry } from "@lca/shared";
 import { DaemonClient, DaemonError } from "../packages/cli/src/client.ts";
 import {
   buildImplementFullyKickoff,
@@ -188,6 +188,7 @@ function entry(
     startedAt: null,
     settledAt: null,
     updatedAt: "2026-07-10 12:00:00",
+    entryDetail: emptyQueueEntryDetail(),
     ...overrides,
   };
 }
@@ -376,6 +377,93 @@ describe("b58.3 cmdQueue", () => {
     expect(output).toMatch(/blocked by failed feature b9/);
   });
 
+  it("list --json prints entries with entryDetail", async () => {
+    const docPath = "docs/roadmap/b10/00-index.md";
+    const entries: FeatureQueueEntry[] = [
+      entry({
+        id: "entry-queued",
+        featureId: "b10",
+        state: "queued",
+        entryDetail: {
+          ...emptyQueueEntryDetail(),
+          featureDocPath: docPath,
+          planningDepth: "jit",
+          roleModelProfileId: "fast-moderate",
+        },
+      }),
+    ];
+
+    class StubClient extends DaemonClient {
+      override async listFeatureQueue(): Promise<FeatureQueueEntry[]> {
+        return entries;
+      }
+    }
+    const client = new StubClient("http://127.0.0.1:1");
+    const logCalls: unknown[][] = [];
+    vi.spyOn(console, "log").mockImplementation((...args) => {
+      logCalls.push(args);
+    });
+    await cmdQueue(client, ["list", "--json"]);
+    const output = logCalls.map((c) => c.join(" ")).join("\n");
+    const parsed = JSON.parse(output) as { entries: FeatureQueueEntry[] };
+    expect(parsed.entries).toHaveLength(1);
+    expect(parsed.entries[0]?.entryDetail.featureDocPath).toBe(docPath);
+    expect(parsed.entries[0]?.entryDetail.planningDepth).toBe("jit");
+    expect(parsed.entries[0]?.entryDetail.roleModelProfileId).toBe(
+      "fast-moderate"
+    );
+    expect(parsed.entries[0]).not.toHaveProperty("kickoff");
+
+    logCalls.length = 0;
+    await cmdQueue(client, ["list", "--json", "-v"]);
+    const jsonWins = logCalls.map((c) => c.join(" ")).join("\n");
+    expect(JSON.parse(jsonWins).entries).toHaveLength(1);
+    expect(jsonWins).not.toMatch(/planningDepth:/);
+  });
+
+  it("list -v prints doc path, dependency state, position, and createdAt", async () => {
+    const docPath = "docs/roadmap/b10/00-index.md";
+    const createdAt = "2026-07-10 12:00:00";
+    const entries: FeatureQueueEntry[] = [
+      entry({
+        id: "entry-queued",
+        featureId: "b10",
+        position: 2,
+        state: "queued",
+        after: ["b9"],
+        createdAt,
+        entryDetail: {
+          ...emptyQueueEntryDetail(),
+          featureDocPath: docPath,
+        },
+      }),
+      entry({
+        id: "entry-running",
+        featureId: "b9",
+        position: 1,
+        state: "running",
+        runId: "run-abcdef12",
+      }),
+    ];
+
+    class StubClient extends DaemonClient {
+      override async listFeatureQueue(): Promise<FeatureQueueEntry[]> {
+        return entries;
+      }
+    }
+    const client = new StubClient("http://127.0.0.1:1");
+    const logCalls: unknown[][] = [];
+    vi.spyOn(console, "log").mockImplementation((...args) => {
+      logCalls.push(args);
+    });
+    await cmdQueue(client, ["list", "-v"]);
+    const output = logCalls.map((c) => c.join(" ")).join("\n");
+    expect(output).toContain(docPath);
+    expect(output).toMatch(/after b9 \(running\)/);
+    expect(output).toMatch(/position: 2/);
+    expect(output).toContain(`createdAt: ${createdAt}`);
+  });
+
   it("rm resolves unique prefix and rejects ambiguous prefix", async () => {
     const entries: FeatureQueueEntry[] = [
       entry({ id: "aaaa1111-1111", featureId: "b1", state: "queued" }),
@@ -402,6 +490,75 @@ describe("b58.3 cmdQueue", () => {
     await cmdQueue(client, ["rm", "aaaa1111"]);
     log.mockRestore();
     expect(cancelled).toBe("aaaa1111-1111");
+  });
+
+  it("move rejects unknown subcommand and missing flags before POST", async () => {
+    const entries: FeatureQueueEntry[] = [
+      entry({ id: "aaaa1111-1111", featureId: "b1", state: "queued" }),
+    ];
+    let moveCalled = false;
+
+    class StubClient extends DaemonClient {
+      override async listFeatureQueue(): Promise<FeatureQueueEntry[]> {
+        return entries;
+      }
+      override async moveFeatureQueueEntry(): Promise<FeatureQueueEntry> {
+        moveCalled = true;
+        return entries[0]!;
+      }
+    }
+    const client = new StubClient("http://127.0.0.1:1");
+
+    await expect(cmdQueue(client, ["mv", "aaaa1111"])).rejects.toThrow(/Unknown queue subcommand/);
+    await expect(cmdQueue(client, ["move"])).rejects.toThrow(/Usage: lca queue move/);
+    await expect(cmdQueue(client, ["move", "aaaa1111"])).rejects.toThrow(
+      /queue move requires exactly one/
+    );
+    await expect(
+      cmdQueue(client, ["move", "aaaa1111", "--top", "--before", "bbbb"])
+    ).rejects.toThrow(/only one of --before, --after, or --top/);
+    expect(moveCalled).toBe(false);
+  });
+
+  it("move resolves unique prefix and prints new position", async () => {
+    const entries: FeatureQueueEntry[] = [
+      entry({ id: "aaaa1111-1111", featureId: "b1", state: "queued", position: 2 }),
+      entry({ id: "aaaa2222-2222", featureId: "b2", state: "queued", position: 3 }),
+    ];
+    let movedId: string | undefined;
+    let moveBody: { before: string } | { after: string } | { top: true } | undefined;
+
+    class StubClient extends DaemonClient {
+      override async listFeatureQueue(): Promise<FeatureQueueEntry[]> {
+        return entries;
+      }
+      override async moveFeatureQueueEntry(
+        id: string,
+        body: { before: string } | { after: string } | { top: true }
+      ): Promise<FeatureQueueEntry> {
+        movedId = id;
+        moveBody = body;
+        return { ...entries[0]!, position: 2 };
+      }
+    }
+    const client = new StubClient("http://127.0.0.1:1");
+
+    await expect(cmdQueue(client, ["move", "aaaa", "--top"])).rejects.toThrow(/Ambiguous/);
+
+    const logCalls: unknown[][] = [];
+    vi.spyOn(console, "log").mockImplementation((...args) => {
+      logCalls.push(args);
+    });
+    await cmdQueue(client, ["move", "aaaa1111", "--top"]);
+    expect(movedId).toBe("aaaa1111-1111");
+    expect(moveBody).toEqual({ top: true });
+    expect(logCalls.map((c) => c.join(" ")).join("\n")).toMatch(
+      /Moved b1 to position 2/
+    );
+
+    await cmdQueue(client, ["move", "aaaa1111", "--before", "aaaa2222"]);
+    expect(movedId).toBe("aaaa1111-1111");
+    expect(moveBody).toEqual({ before: "aaaa2222-2222" });
   });
 
   it("clear cancels queued and blocked only", async () => {

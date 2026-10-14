@@ -54,12 +54,22 @@ for you.
 
 Bare `max doctor` compares installed skill copies under `~/.cursor/skills/` to
 this checkout's bundled skills (`implement-fully`, `plan-implement-fully`,
-`max-setup`; `scripts/install-skill.mjs --check`). **Drift** means the on-disk
-copies differ — run `max skills install`. After upgrades, read the changelog
-**Upgrade actions** block; it may instruct a skills reinstall. Skills installed
-only through the Cursor GitHub plugin cache are **not** visible to this check
-(plugin-cache limitation). npm and skill probes degrade to unavailable when
-spawn fails; doctor still prints the rest.
+`max-setup`, `max-orchestrate`; `scripts/install-skill.mjs --check`). **Drift**
+means the on-disk copies differ — run `max skills install`. After upgrades,
+read the changelog **Upgrade actions** block; it may instruct a skills reinstall.
+Skills installed only through the Cursor GitHub plugin cache are **not** visible
+to this check (plugin-cache limitation). npm and skill probes degrade to
+unavailable when spawn fails; doctor still prints the rest.
+
+## Capability map version skew
+
+If **`max capabilities --json`** is missing, returns an unexpected schema, or
+disagrees with docs you remember, the CLI and daemon are on mismatched builds.
+Run **`max update check`**, compare Settings → About versions, and upgrade or
+rebuild this checkout. Do not invent verbs or playbooks from stale prose — re-run
+capabilities after the versions align. Orchestrator agents should load the
+**`max-orchestrate`** skill (installed via `max skills install`) so routing stays
+capability-first.
 
 ## Roadmap readiness (doctor)
 
@@ -521,6 +531,32 @@ a usable ntfy connection when `ntfy` is on for that event, and no
   Notify prefs hot-reload after YAML edits or Alerts Save — no restart needed
   for notify-only changes. Do not restart the live daemon from inside an
   active automation run.
+
+## Wake hooks
+
+- **Missing `tokenEnv`** — the env var named in YAML is unset or empty at send
+  time. Add it to `~/.cursor-local-automations/.env` and **restart the daemon**
+  so `loadEnv` picks it up. Doctor and Settings show a delivery failure with
+  error `token`; the token value is never logged or returned by the API.
+- **Certificate / TLS failures** — delivery records error `certificate` (the
+  host is not logged). On a TLS-inspecting network, set `NODE_EXTRA_CA_CERTS`
+  to the corporate root PEM before starting Max. Confirm with `max update
+  check` — it uses the same Node fetch path.
+- **Coalesce or cap looks "silent"** — bursts within `coalesceMs` (default 60s)
+  collapse to one summary wake with a `suppressed` count; more than
+  `maxPerHour` (default 12) per rolling hour is dropped until the window
+  moves. Test sends count toward the cap but bypass coalesce.
+- **Actor self-suppression** — when the hook's `actorId` matches a newer
+  `X-LCA-Actor` escalation on that lineage, the wake is skipped (`suppressed-actor`).
+  `queue_batch_complete` is never suppressed this way.
+- **Empty ring after restart** — delivery history is in-memory only; a daemon
+  restart clears it. Hooks themselves reload from YAML without restart.
+- **`chat busy`** — the target chat was `running` or `needs_input`; the wake
+  was not sent. Retry after the chat is idle or pick another sink.
+- **`delivered, no actor activity since`** — doctor (and Settings when flagged)
+  means the hook delivered successfully but no actor-stamped activity followed
+  on that root; check that the orchestrator can reach Max and runs commands
+  with the expected `LCA_ACTOR`.
 
 ## Needs-input / `ask_user`
 

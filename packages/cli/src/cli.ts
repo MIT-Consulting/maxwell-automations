@@ -38,6 +38,8 @@ import {
 import { cmdImplementFully } from "./implement-fully.js";
 import { assertNoExtraRunArgs } from "./run-argv.js";
 import { cmdQueue } from "./queue.js";
+import { cmdCapabilities } from "./capabilities.js";
+import { probeBundledSkillStatus } from "./skill-check.js";
 import { formatInputRequest } from "./input-request.js";
 import {
   formatWaveOperatorResponse,
@@ -55,6 +57,8 @@ import {
   formatPipelineBlockLines,
   formatPipelineHealthLines,
   formatFeatureQueueLines,
+  formatWakeHookLines,
+  formatWebhookTriggerLines,
   formatRoadmapFullReportLines,
   formatRoadmapSummaryLines,
   buildDoctorSupportReport,
@@ -84,7 +88,17 @@ import {
   type InstanceMode,
   VITE_PORT,
 } from "./lifecycle.js";
-import { parseListArgs, selectListEntries } from "./list.js";
+import {
+  buildListJsonDocument,
+  LIST_RUN_FETCH_LIMIT,
+  parseListArgs,
+  selectListEntries,
+} from "./list.js";
+import {
+  assertStatusArgs,
+  buildStatusJsonDocument,
+  collectStatusSnapshot,
+} from "./status.js";
 import { resolveWorkspaceFromCwd } from "./implement-fully.js";
 import {
   applyRoadmapFixPlan,
@@ -300,7 +314,7 @@ function resolveAutomation(automations: Automation[], query: string): Automation
 }
 
 async function cmdList(client: DaemonClient, args: string[]): Promise<void> {
-  const { workspaceQuery } = parseListArgs(args);
+  const { workspaceQuery, json } = parseListArgs(args);
 
   const workspaceId = workspaceQuery
     ? await resolveWorkspaceId(client, workspaceQuery)
@@ -308,7 +322,7 @@ async function cmdList(client: DaemonClient, args: string[]): Promise<void> {
 
   const [allAutomations, allRuns, workspaces] = await Promise.all([
     client.listAutomations(),
-    client.listRuns(50),
+    client.listRuns(LIST_RUN_FETCH_LIMIT),
     client.listWorkspaces(),
   ]);
 
@@ -317,6 +331,16 @@ async function cmdList(client: DaemonClient, args: string[]): Promise<void> {
     allRuns,
     workspaceId
   );
+
+  if (json) {
+    const workspace = workspaceId
+      ? workspaces.find((entry) => entry.id === workspaceId)
+      : undefined;
+    process.stdout.write(
+      `${JSON.stringify(buildListJsonDocument(automations, runs, workspace))}\n`
+    );
+    return;
+  }
 
   const wsName = new Map(workspaces.map((w) => [w.id, w.name ?? w.path]));
 
@@ -798,38 +822,9 @@ export function collectEnvironmentFacts(live: DaemonStatus | null): EnvironmentF
       err instanceof Error ? err.message : "npm version probe failed";
   }
 
-  let skillStatus: SkillCopyStatus = "unavailable";
-  let skillUnavailableReason: string | undefined;
-  const skillScript = join(repoRoot(), "scripts", "install-skill.mjs");
-  if (!existsSync(skillScript)) {
-    skillUnavailableReason =
-      "install-skill.mjs not found in this checkout — max skills install unavailable";
-  } else {
-    try {
-      const skillResult = spawnSync(process.execPath, [skillScript, "--check"], {
-        encoding: "utf8",
-        timeout: ENV_PROBE_TIMEOUT_MS,
-        windowsHide: true,
-      });
-      const combined = `${skillResult.stdout ?? ""}${skillResult.stderr ?? ""}`;
-      if (skillResult.error) {
-        skillUnavailableReason = skillResult.error.message;
-      } else if (combined.includes("Drift detected.")) {
-        skillStatus = "drift";
-      } else if (combined.includes("In sync.")) {
-        skillStatus = "in-sync";
-      } else if (skillResult.status === 1) {
-        skillStatus = "drift";
-      } else if (skillResult.status === 0) {
-        skillStatus = "in-sync";
-      } else {
-        skillUnavailableReason = `skill check exited ${skillResult.status ?? "signal"}`;
-      }
-    } catch (err) {
-      skillUnavailableReason =
-        err instanceof Error ? err.message : "skill check probe failed";
-    }
-  }
+  const skillProbe = probeBundledSkillStatus(repoRoot());
+  const skillStatus: SkillCopyStatus = skillProbe.status;
+  const skillUnavailableReason = skillProbe.unavailableReason;
 
   const daemonNode =
     live?.runningNode != null && live.runningNode.trim().length > 0
@@ -956,6 +951,34 @@ async function cmdDoctorHealth(client: DaemonClient): Promise<void> {
     }
   } catch {
     console.log("  (queue status unavailable — daemon may need restart)");
+  }
+
+  if (live) {
+    try {
+      const wakeSnapshot = await client.getWakeHooks();
+      const wakeLines = formatWakeHookLines(wakeSnapshot.hooks);
+      if (wakeLines.length > 0) {
+        console.log("\nWake hooks");
+        for (const line of wakeLines) {
+          console.log(line);
+        }
+      }
+    } catch {
+      /* wake hooks optional when daemon predates b83 */
+    }
+
+    try {
+      const webhookSnapshot = await client.getWebhookTriggers();
+      const webhookLines = formatWebhookTriggerLines(webhookSnapshot.webhooks);
+      if (webhookLines.length > 0) {
+        console.log("\nWebhooks");
+        for (const line of webhookLines) {
+          console.log(line);
+        }
+      }
+    } catch {
+      /* webhooks optional when daemon predates b84 phase 2 */
+    }
   }
 
   const failed = runs.filter((r) => r.status === "failed").slice(0, 5);
@@ -2163,10 +2186,18 @@ function installBundledSkills(root: string): void {
   }
 }
 
-async function cmdStatus(client: DaemonClient): Promise<void> {
+async function cmdStatus(client: DaemonClient, argv: readonly string[] = []): Promise<void> {
+  const json = assertStatusArgs(argv);
   const live = await readLiveStatus(client);
 
   if (!live) {
+    if (json) {
+      process.exitCode = 1;
+      process.stderr.write(
+        `Daemon unreachable at ${client.base}; status --json requires a live daemon.\n`
+      );
+      return;
+    }
     const devPid = readDevPid();
     if (devPid) {
       console.log(`Daemon: not responding (dev rig pid ${devPid} may be starting)`);
@@ -2174,6 +2205,14 @@ async function cmdStatus(client: DaemonClient): Promise<void> {
     } else {
       console.log(`Daemon: not running at ${client.base}`);
     }
+    return;
+  }
+
+  if (json) {
+    const snapshot = await collectStatusSnapshot(client);
+    process.stdout.write(
+      `${JSON.stringify(buildStatusJsonDocument(live, snapshot))}\n`
+    );
     return;
   }
 
@@ -2220,18 +2259,14 @@ async function cmdStatus(client: DaemonClient): Promise<void> {
     console.log(`  daemon log: ${DAEMON_ERR_LOG}`);
   }
 
-  const [automations, runs, workspaces] = await Promise.all([
-    client.listAutomations(),
-    client.listRuns(500),
-    client.listWorkspaces(),
-  ]);
-  const enabled = automations.filter((a) => a.enabled).length;
+  const snapshot = await collectStatusSnapshot(client);
+  const enabled = snapshot.automations.filter((a) => a.enabled).length;
   const byStatus = new Map<string, number>();
-  for (const r of runs) {
+  for (const r of snapshot.runs) {
     byStatus.set(r.status, (byStatus.get(r.status) ?? 0) + 1);
   }
-  console.log(`\nAutomations: ${automations.length} (${enabled} enabled)`);
-  console.log(`Workspaces:  ${workspaces.length}`);
+  console.log(`\nAutomations: ${snapshot.automations.length} (${enabled} enabled)`);
+  console.log(`Workspaces:  ${snapshot.workspaces.length}`);
   if (byStatus.size === 0) {
     console.log("Runs:        (none)");
   } else {
@@ -2866,7 +2901,7 @@ Usage:
   max up dev                     Start dev stack (HMR, single port) or switch from prod
   max down                       Stop daemon or dev stack (mode-aware)
   max restart [dev|prod]         Restart; bare restart keeps current mode
-  max status                     Instance health, mode, remote, counts
+  max status [--json]            Instance health, mode, remote, bounded run counts
   max --version                  Print the CLI build version
   max version                    Running, checkout, and update state
   max update check               Refresh the approved-release check
@@ -2877,13 +2912,15 @@ Usage:
                                  Install a test bundle on a public clone
   max update --stable            Return to the release saved before --from
   max logs --daemon [-f]         Tail daemon or dev rig log (-f to follow)
-  max list [--workspace, -w <id|name|path>]
+  max list [--json] [--workspace, -w <id|name|path>]
                                  Show automations and recent run states
   max workspace add <path>       Register a repository with the daemon
   max enable <id|name>           Arm an automation
   max disable <id|name>          Disarm an automation
   max run <id|name>              Trigger a run (id or name only; no extra flags)
   max logs <runId> [--no-follow] Tail (and follow) a run's events
+  max capabilities [--json] [--workspace, -w <id|name|path>]
+                                 Orchestrator capability map (surfaces, playbooks, statuses)
   max doctor [runId|chatId|workspace]  Diagnose a run/chat, roadmap readiness, or daemon health
                                  [--feature <feature-id>] [-w <workspace>] [--json] [--report]
   max watch <feature-id|runId>           Watch pipeline lifecycle (long-poll feed)
@@ -2919,10 +2956,12 @@ Usage:
   max implement-fully --idea <text>
                                  Kick off new work (needs daemon)
                                  [--research-approval <none|before-planning>]
-  max queue [list]               List serial implement-fully queue entries
+  max queue [list] [--json|-v]   List serial implement-fully queue entries
   max queue add --feature <feature-id>   Enqueue documented work for overnight chaining
   max queue add --idea <text>    Enqueue new work (same options as implement-fully)
   max queue rm <id>              Cancel a waiting queue entry
+  max queue move <id> --top      Move a waiting entry to the front of the queue
+  max queue move <id> --before|--after <id>   Reorder relative to another entry
   max queue clear                Cancel all queued and blocked entries
   max skills install             Copy bundled skills into ~/.cursor/skills
                                  (--check|--dry-run passthrough)
@@ -3048,7 +3087,7 @@ export async function main(): Promise<void> {
     }
     case "status":
     case "st":
-      await cmdStatus(client);
+      await cmdStatus(client, rest);
       return;
     case "list":
     case "ls":
@@ -3161,6 +3200,9 @@ export async function main(): Promise<void> {
       return;
     case "doctor":
       await cmdDoctor(client, rest);
+      return;
+    case "capabilities":
+      await cmdCapabilities(client, rest);
       return;
     case "watch": {
       const code = await cmdWatch(client, rest);
